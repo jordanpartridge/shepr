@@ -2,7 +2,7 @@
    Goal: when the tailnet is unreachable, the user sees YOUR app with YOUR message,
    not Safari's error page. It is NOT a general offline database. */
 
-const VERSION = 'shepr-v2';
+const VERSION = 'shepr-v3';
 // The app shell: everything needed to paint a useful screen with no network.
 const SHELL = ['./', 'index.html', 'app.css', 'app.js', 'manifest.webmanifest', 'icons/icon-180.png', 'icons/icon-192.png'];
 
@@ -46,11 +46,16 @@ self.addEventListener('fetch', (e) => {
   // and a stale one would look like the current question. Let it fail honestly when offline.
   if (url.pathname.startsWith('/api/')) return;
 
-  // Shell: cache first. It changes rarely and this is what makes a cold start instant.
+  // Shell: NETWORK first, so a change shows on the very next open instead of the one after. If the network
+  // is gone or slower than 2.5s (a dead tailnet can hang for a long time), fall back to the cache, which is
+  // what keeps the app opening offline.
   e.respondWith(
-    caches.match(req).then((hit) => hit || fetch(req).then((res) => {
-      if (res.ok && url.pathname !== '/api/hello') { const copy = res.clone(); caches.open(VERSION).then((c) => c.put(req, copy)); }
+    new Promise((resolve, reject) => {
+      const t = setTimeout(() => reject(new Error('slow')), 2500);
+      fetch(req).then((res) => { clearTimeout(t); resolve(res); }, (err) => { clearTimeout(t); reject(err); });
+    }).then((res) => {
+      if (res.ok) { const copy = res.clone(); caches.open(VERSION).then((c) => c.put(req, copy)); }
       return res;
-    }).catch(() => caches.match('index.html')))
+    }).catch(() => caches.match(req).then((hit) => hit || caches.match('index.html')))
   );
 });

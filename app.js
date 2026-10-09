@@ -340,7 +340,9 @@ function itemNode(a, ctx, compact, idx) {
     n.append(d);
   } else n.append(ageBox(a));
   const m = el('div', 'meta');
-  m.append(el('div', 'ttl', label(a)), el('div', 'sub', [a.host, a.agent].join(' · ')));
+  const t = el('div', 'ttl', label(a));
+  if (S.q && S.q.hosts.length > 1) t.append(el('span', 'htag', a.host));
+  m.append(t, el('div', 'sub', a.title));
   n.append(m, el('div', 'chev', '›'));
   gesture(n, { tap: () => openDetail(a.host, a.pane, ctx), long: () => openPeek(a, ctx) });
   return n;
@@ -604,7 +606,7 @@ function btn(text, cls, fn) {
 // ---- peek (hold a row): the last lines without leaving the list
 function openPeek(a, ctx) {
   const box = el('div');
-  box.append(el('h3', null, label(a)), el('div', 'sub', [a.host, STATE_LABEL[a.status] || a.status].join(' · ')));
+  box.append(el('h3', null, label(a)), el('div', 'sub', [a.title, a.host, STATE_LABEL[a.status] || a.status].filter(Boolean).join(' · ')));
   const pre = el('pre', 'peek selectable', 'reading…');
   box.append(pre);
   const row = el('div', 'btns');
@@ -744,7 +746,7 @@ function paintDetailChrome() {
   const { l, i } = position();
   if (a) {
     $('dtitle').textContent = label(a);
-    $('dsub').textContent = [a.host, a.agent, a.pane].join(' · ');
+    $('dsub').textContent = a.title;
     const st = $('dstate');
     let txt = STATE_LABEL[a.status] || a.status;
     if (a.for_s != null) txt += ' ' + fmtAge(a.for_s, a.exact).main + (fmtAge(a.for_s, a.exact).sub || '');
@@ -824,7 +826,7 @@ function loadTail(force) {
         S.tailText = r.text;
         if (first || force || stick) $('tail').scrollTop = $('tail').scrollHeight;
       }
-      $('dtime').textContent = 'last 40 lines · ' + clock(r.at);
+      $('dtime').textContent = [at.host, at.pane, clock(r.at)].join(' · ');
       paintDock(); paintDetailChrome();
     })
     .catch((e) => {

@@ -932,6 +932,10 @@ class Handler(SimpleHTTPRequestHandler):
         self.send_header("Referrer-Policy", "no-referrer")
         # Camera is the one device feature this app asks for (scanning the pairing QR).
         self.send_header("Permissions-Policy", "camera=(self), microphone=(), geolocation=()")
+        # Static files: always revalidate (they carry Last-Modified, so this is cheap) so Safari's own cache
+        # never serves an old app.js that the service worker's network-first rule would have refreshed.
+        if not any(h.lower().startswith(b"cache-control") for h in getattr(self, "_headers_buffer", [])):
+            self.send_header("Cache-Control", "no-cache")
         super().end_headers()
 
     def json_out(self, code, obj):

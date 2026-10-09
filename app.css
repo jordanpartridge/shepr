@@ -49,9 +49,11 @@ button{font:inherit;color:inherit}
 
 .bar{
   flex:0 0 auto;display:flex;align-items:center;gap:8px;
-  /* WHY: the inset is ADDED to real padding. Using only the inset gives you a cramped
+  /* WHY: the inset is ADDED to real padding, and never less than 20px: on an iPhone Home Screen app the status bar and
+     Dynamic Island were clipping the first line of the header when the inset alone was used.
+     The inset is ADDED to real padding. Using only the inset gives you a cramped
      header on phones with no notch. */
-  padding:calc(var(--top) + 6px) 12px 6px 16px;
+  padding:calc(max(var(--top), 20px) + 12px) 12px 6px 16px;
   background:var(--panel);border-bottom:1px solid var(--line);
 }
 .bar h1{font-size:19px;font-weight:800;color:#fff;letter-spacing:2.2px;text-transform:uppercase;margin-right:auto}
@@ -387,3 +389,5 @@ button{font:inherit;color:inherit}
 
 /* WHY: a sheet's content must be a flex child that can shrink, or a tall list pushes its own buttons off the bottom of the screen. */
 .sheet>div{display:flex;flex-direction:column;flex:1 1 auto;min-height:0}
+
+.htag{margin-left:8px;font-size:13px;font-weight:700;color:var(--dim);letter-spacing:.3px}
