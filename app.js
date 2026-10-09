@@ -8,7 +8,7 @@
      3. No timer, retry or "auto" anything ever sends. A failed send is reported, never repeated.
      4. The private key never leaves the phone: it is generated non-extractable and only signs. */
 'use strict';
-const BUILD = 'v12';   // keep equal to sw.js VERSION: shown in Keys and logged by the host, so you can see which app a phone is running
+const BUILD = 'v13';   // keep equal to sw.js VERSION: shown in Keys and logged by the host, so you can see which app a phone is running
 
 // ---------------------------------------------------------------------------
 // 1. Service worker. Without this, a dead tailnet shows Safari's error page and
@@ -452,6 +452,39 @@ function paintMain() {
 }
 
 $('refresh').addEventListener('click', () => { fetchQueue(true); if (S.tab === 'hosts' || S.tab === 'keys') loadHosts(); });
+
+// Pull down from the top of any list to refresh. Reads only: it never writes, and it never navigates.
+(function pullToRefresh() {
+  const m = $('main'), ind = el('div', 'ptr'); ind.setAttribute('aria-hidden', 'true');
+  ind.innerHTML = '<svg viewBox="0 0 24 24"><path d="M20 12a8 8 0 1 1-2.6-5.9M20 4v5h-5"/></svg>';   // constant markup, never data
+  document.body.append(ind);
+  const LIMIT = 70;
+  let y0 = null, pull = 0;
+  const paint = (p, spin) => {
+    ind.style.top = (m.getBoundingClientRect().top + 6) + 'px';
+    ind.style.opacity = p ? Math.min(1, p / LIMIT) : 0;
+    ind.style.transform = 'translateY(' + Math.min(p, LIMIT) * 0.6 + 'px) rotate(' + (p * 4) + 'deg)';
+    ind.classList.toggle('spin', !!spin);
+  };
+  m.addEventListener('touchstart', (e) => {
+    y0 = (m.scrollTop <= 0 && !S.sheetOpen && !S.cur && e.touches.length === 1) ? e.touches[0].clientY : null; pull = 0;
+  }, { passive: true });
+  m.addEventListener('touchmove', (e) => {
+    if (y0 == null) return;
+    pull = Math.max(0, e.touches[0].clientY - y0);
+    if (m.scrollTop > 0) { y0 = null; paint(0); return; }
+    paint(pull);
+  }, { passive: true });
+  const end = () => {
+    if (y0 == null) return;
+    const go = pull >= LIMIT; y0 = null;
+    if (!go) { paint(0); return; }
+    paint(LIMIT, true);
+    Promise.all([fetchQueue(true), (S.tab === 'hosts' || S.tab === 'keys') ? loadHosts() : null]).finally(() => setTimeout(() => paint(0), 400));
+  };
+  m.addEventListener('touchend', end, { passive: true });
+  m.addEventListener('touchcancel', () => { y0 = null; paint(0); }, { passive: true });
+})();
 
 // ---------------------------------------------------------------------------
 // 8. Hosts and keys views

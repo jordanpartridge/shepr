@@ -132,6 +132,32 @@ const browser = await chromium.launch({ executablePath: '/usr/bin/chromium', arg
   const statuses = await page.$$eval('#main .item', (n) => n.map((x) => x.classList.contains('blocked') ? 'b' : x.classList.contains('working') ? 'w' : 'i').join(''));
   check('rows are ordered blocked, then working, then sleeping', /^b+w*i*$/.test(statuses));
 
+  // ---- pull down from the top refreshes (a read: it asks the host for a fresh queue, nothing else)
+  {
+    let fresh = 0; const onReq = (r) => { if (/api\/queue\?fresh=1/.test(r.url())) fresh++; };
+    page.on('request', onReq);
+    await page.evaluate(() => {
+      const m = document.getElementById('main'); m.scrollTop = 0;
+      const t = (type, y) => m.dispatchEvent(new TouchEvent(type, { bubbles: true, cancelable: true,
+        touches: type === 'touchend' ? [] : [new Touch({ identifier: 1, target: m, clientX: 190, clientY: y })],
+        changedTouches: [new Touch({ identifier: 1, target: m, clientX: 190, clientY: y })] }));
+      t('touchstart', 200); t('touchmove', 230); t('touchmove', 300); t('touchend', 300);
+    });
+    await page.waitForTimeout(700);
+    check('pull down from the top refreshes the queue', fresh >= 1);
+    const before = fresh;
+    await page.evaluate(() => {
+      const m = document.getElementById('main'); m.scrollTop = 0;
+      const t = (type, y) => m.dispatchEvent(new TouchEvent(type, { bubbles: true, cancelable: true,
+        touches: type === 'touchend' ? [] : [new Touch({ identifier: 1, target: m, clientX: 190, clientY: y })],
+        changedTouches: [new Touch({ identifier: 1, target: m, clientX: 190, clientY: y })] }));
+      t('touchstart', 200); t('touchmove', 220); t('touchend', 220);
+    });
+    await page.waitForTimeout(500);
+    check('a short pull does not refresh', fresh === before);
+    page.off('request', onReq);
+  }
+
   // ---- wake sleeping sessions: confirm first, never a blocked one
   const blockedPane = await page.evaluate(() => window.shepr.S.q.agents.find((a) => a.status === 'blocked'));
   const refuse = await page.evaluate(async (a) => {

@@ -36,7 +36,7 @@ from the Home Screen, tap **Scan QR**, point it at the code in your terminal, ta
 
 | Tab | What |
 |---|---|
-| **Queue** | Everything, in the order that matters: **Needs you** (longest blocked first), **Finished**, **Working**, then **Sleeping** last (with a **Wake…** button). Sessions are named after your herdr workspace ("Shepr"), falling back to the project directory. Badge shows what needs you. |
+| **Queue** | Everything, in the order that matters: **Needs you** (longest blocked first), **Finished**, **Working**, then **Sleeping** last (with a **Wake…** button). Sessions are named after your herdr workspace ("Shepr"), falling back to the project directory. Badge shows what needs you. | It refreshes itself every 10 s while the app is open and the moment you come back to it; pull down from the top of any list to refresh on demand.
 | **Herd** | Every session on every host, grouped by host. |
 | **Go** | Search every session by project, session title or host. Waiting first, then recent. |
 | **Hosts** | Hosts herdr can reach (turn saved ones on or off) and a tailnet scan for more. |
