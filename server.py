@@ -63,7 +63,7 @@ KEY_CHAR = re.compile(r"^[0-9A-Za-z]$")
 LOCK = threading.RLock()
 SNAP = {"ts": 0.0, "hosts": [], "agents": [], "polls": 0}
 PLANS = {}
-OWNER = {"login": None, "names": {"localhost", "127.0.0.1", "[::1]"}}
+OWNER = {"login": None, "dns": None, "names": {"localhost", "127.0.0.1", "[::1]"}}
 
 
 class HerdrError(Exception):
@@ -704,8 +704,8 @@ def server_info():
 def public_url(port):
     if os.environ.get("SHEPR_URL"):
         return os.environ["SHEPR_URL"].rstrip("/")
-    dns = sorted(n for n in OWNER["names"] if "." in n and not n.startswith("["))
-    return f"https://{dns[0]}:{port}" if dns else f"http://127.0.0.1:{port}"
+    # The tailnet name, never the loopback aliases that are also in OWNER["names"] (a set sorts 127.0.0.1 first).
+    return f"https://{OWNER['dns']}:{port}" if OWNER.get("dns") else f"http://127.0.0.1:{port}"
 
 
 # --------------------------------------------------------------------------------------------
@@ -909,7 +909,8 @@ def learn_tailnet():
         d = json.loads(subprocess.run(["tailscale", "status", "--json"], stdin=subprocess.DEVNULL,
                                       capture_output=True, text=True, timeout=6).stdout)
         me = d["Self"]
-        OWNER["names"].add(me["DNSName"].rstrip(".").lower())
+        OWNER["dns"] = me["DNSName"].rstrip(".").lower()
+        OWNER["names"].add(OWNER["dns"])
         OWNER["login"] = d["User"][str(me["UserID"])]["LoginName"].lower()
     except Exception as e:
         print(f"shepr: tailscale identity unavailable ({e!r}); tailnet requests will be refused", file=sys.stderr)
@@ -980,6 +981,8 @@ class Handler(SimpleHTTPRequestHandler):
                 raise HerdrError("bad_request", "body must be an object")
 
             if u.path == "/api/hello" and not post:
+                # The one request every launch makes first: worth a journal line, it is how you see a phone arrive.
+                print(f"shepr: hello from {net} ({(self.headers.get('User-Agent') or '')[:70]})", file=sys.stderr, flush=True)
                 return self.json_out(200, {"app": "shepr", "v": 1, "name": LOCAL, "t": time.time(),
                                            "paired": bool(devices()), "writes": not READONLY})
             if u.path == "/api/pair" and post:
