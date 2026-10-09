@@ -11,9 +11,14 @@
 set -euo pipefail
 SOCK="$HOME/.config/herdr/sessions/hrtest/herdr.sock"
 H(){ env -u HERDR_PANE_ID -u HERDR_WORKSPACE_ID -u HERDR_TAB_ID HERDR_SOCKET_PATH="$SOCK" herdr "$@" < /dev/null; }
-mk(){ # label cwd state [agent]
+mk(){ # label cwd state [agent] [title] [file-to-show]
   local p; p=$(H workspace create --label "$1" --cwd "$2" | python3 -c 'import json,sys;print(json.load(sys.stdin)["result"]["root_pane"]["pane_id"])')
-  H pane run "$p" "cd $2; clear; printf '%s\n' 'Working on $1' 'Do you want to proceed?' '❯ 1. Yes' '  2. Yes, and do not ask again' '  3. No' '' 'Esc to cancel'; sleep 100000" >/dev/null
+  local show
+  # herdr reads the TERMINAL title (what Claude Code sets to a summary of the session), so set it the same way
+  local ttl="printf '\\033]0;✳ %s\\007' '${5:-$1}'"
+  if [ -n "${6:-}" ]; then show="clear; cat '$6'"
+  else show="clear; printf '%s\n' 'Working on $1' 'Do you want to proceed?' '❯ 1. Yes' '  2. Yes, and do not ask again' '  3. No' '' 'Esc to cancel'"; fi
+  H pane run "$p" "cd $2; $ttl; $show; sleep 100000" >/dev/null
   sleep .6
   # report-agent fakes the state herdr would detect; "done" is not a state you can fake.
   H pane report-agent "$p" --source hrtest:fake --agent "${4:-claude}" --state "$3" >/dev/null
@@ -22,8 +27,13 @@ mk(){ # label cwd state [agent]
 case "${1:-}" in
   up)
     (setsid nohup herdr --session hrtest server >/dev/null 2>&1 < /dev/null &); sleep 3
-    mk alpha "$HOME/Projects/burnbar" blocked; mk beta "$HOME/Projects/clarity" blocked; mk gamma "$HOME/Projects/blip" working codex; mk delta "$HOME/Projects/infomarchy" idle; mk epsilon "$HOME/Projects/clarity" blocked ;;
+    HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    mk alpha "$HOME/Projects/burnbar" blocked claude "PR Hunter burnbar"
+    mk beta "$HOME/Projects/clarity" blocked claude "Bug fixes and pull requests"
+    mk gamma "$HOME/Projects/blip" working codex "Release notes draft"
+    mk delta "$HOME/Projects/infomarchy" idle claude "Herdr project list sort order" "$HERE/sample-pane.txt"
+    mk epsilon "$HOME/Projects/clarity" blocked claude "Herder workflow automation" ;;
   down) herdr session stop hrtest < /dev/null ;;
-  env) echo "export HERDR_SOCKET_PATH=$SOCK HERDR_REMOTE_STATE=/tmp/hr-test-state HERDR_REMOTE_POLL=3" ;;
+  env) echo "export HERDR_SOCKET_PATH=$SOCK SHEPR_STATE=/tmp/shepr-test-state SHEPR_POLL=3" ;;
   *) sed -n '2,12p' "$0"; exit 1 ;;
 esac

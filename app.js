@@ -8,6 +8,7 @@
      3. No timer, retry or "auto" anything ever sends. A failed send is reported, never repeated.
      4. The private key never leaves the phone: it is generated non-extractable and only signs. */
 'use strict';
+const BUILD = 'v8';   // keep equal to sw.js VERSION: shown in Keys and logged by the host, so you can see which app a phone is running
 
 // ---------------------------------------------------------------------------
 // 1. Service worker. Without this, a dead tailnet shows Safari's error page and
@@ -158,7 +159,7 @@ function post(path, body, extra) {
 }
 async function syncClock() {
   const t0 = Date.now();
-  const h = await api('api/hello', { public: true });
+  const h = await api('api/hello', { public: true, headers: { 'X-Shepr-Build': BUILD } });
   S.hello = h; S.skew = h.t * 1000 - (t0 + Date.now()) / 2;
 }
 
@@ -567,15 +568,15 @@ function paintKeysView(m) {
   const trow = el('div', 'hrow'); trow.style.cssText = 'padding:0;background:none;border:0';
   const tm = el('div', 'meta'); tm.append(el('div', 'sub', 'Phone reports ' + reportedInset() + 'px at the top. Extra: ' + topx + 'px.'));
   const redraw = () => { tm.firstChild.textContent = 'Phone reports ' + reportedInset() + 'px at the top. Extra: ' + topx + 'px.'; };
-  trow.append(tm, btn('\u2212', 'mini-btn', () => { topx = Math.max(0, topx - 4); applyTopx(); redraw(); }),
-              btn('+', 'mini-btn', () => { topx = Math.min(60, topx + 4); applyTopx(); redraw(); }));
+  trow.append(tm, btn('\u2212', 'mini-btn', () => { topx = Math.max(0, topx - 4); applyTopx(true); redraw(); }),
+              btn('+', 'mini-btn', () => { topx = Math.min(80, topx + 4); applyTopx(true); redraw(); }));
   tp.append(trow); m.append(tp);
 
   const row = el('div', 'btns');
   row.append(btn('How to move around', '', openHelp), btn('Forget this phone\u2026', 'bad', forgetThisPhone));
   m.append(row);
   m.append(el('p', 'dim fine', (q && q.writes ? 'Sends always preview first; Shepr never approves anything by itself.' : 'Read-only host.')
-    + ' Blocked time is watched every ' + ((q && q.poll_s) || 15) + 's; \u2265 means it was already blocked when watching began.'));
+    + ' Shepr ' + BUILD + '. Blocked time is watched every ' + ((q && q.poll_s) || 15) + 's; \u2265 means it was already blocked when watching began.'));
 }
 
 function openHelp() {
@@ -627,7 +628,7 @@ function btn(text, cls, fn) {
 function openPeek(a, ctx) {
   const box = el('div');
   box.append(el('h3', null, label(a)), el('div', 'sub', [a.title, a.host, STATE_LABEL[a.status] || a.status].filter(Boolean).join(' · ')));
-  const pre = el('pre', 'peek selectable', 'reading…');
+  const pre = el('div', 'peek selectable', 'reading…');
   box.append(pre);
   const row = el('div', 'btns');
   row.append(btn('Close', '', closeSheet),
@@ -636,7 +637,7 @@ function openPeek(a, ctx) {
   box.append(row);
   openSheet(box);
   api('api/pane?host=' + encodeURIComponent(a.host) + '&pane=' + encodeURIComponent(a.pane) + '&lines=14')
-    .then((r) => { pre.textContent = tidy(r.text); pre.scrollTop = pre.scrollHeight; })
+    .then((r) => { renderBlocks(pre, r.text); pre.scrollTop = pre.scrollHeight; })
     .catch((e) => { pre.textContent = 'Could not read: ' + e.message; });
 }
 
@@ -855,9 +856,9 @@ $('drefresh').addEventListener('click', () => loadTail(true));
 // Session text size: big by default (it is the thing you read), A- / A+ to taste, remembered.
 // Top spacing: the phone's safe-area inset is the right number when iOS reports it, but a Home Screen app has
 // been seen clipping the header anyway, so there is a floor (see app.css) plus this nudge, remembered.
-let topx = Math.max(0, Math.min(60, store.get('shepr.topx', 18)));
-function applyTopx() { document.documentElement.style.setProperty('--topx', topx + 'px'); store.set('shepr.topx', topx); }
-applyTopx();
+let topx = Math.max(0, Math.min(80, store.get('shepr.topx2', 26)));   // saved only when you change it, so a better default can reach you
+function applyTopx(save) { document.documentElement.style.setProperty('--topx', topx + 'px'); if (save) store.set('shepr.topx2', topx); }
+applyTopx(false);
 function reportedInset() {
   const p = document.createElement('div');
   p.style.cssText = 'position:fixed;left:0;top:0;width:0;height:env(safe-area-inset-top,0px);visibility:hidden';
@@ -869,23 +870,95 @@ applyTfs();
 $('fsm').addEventListener('click', () => { tfs = Math.max(13, tfs - 1); applyTfs(); });
 $('fsp').addEventListener('click', () => { tfs = Math.min(28, tfs + 1); applyTfs(); });
 
-// Collapse long runs of box-drawing so a wrapped rule is one short line on a phone.
+// ---------------------------------------------------------------------------
+// Terminal text, made readable on a phone. A terminal is 100+ columns of fixed-width cells, so at phone width the
+// raw text wraps mid-line with no alignment. Instead each LINE becomes a block: prose reflows in the normal font
+// with a hanging indent (bullets and numbered lines stay aligned), code / tables / box art stay fixed-width,
+// rules become thin dividers, and the status-bar block under the prompt becomes chips. Text only ever goes
+// through textContent: it is data, never markup.
+// ---------------------------------------------------------------------------
 const RULE = /^[\s─-╿\-_=|]{8,}$/;
+const BOX = /[─-╿▀-▟]/;
+const BULLET = /^(?:[•·▸▶►❯>*\-]\s+|\d{1,2}[.)]\s+|[☐☑✓✗✔✘⏺⎿]\s*)/;
+const CODEISH = /[{}<>=`\\]|\w\/\w|^\$ |\.(?:js|ts|py|md|json|sh|css|html|toml|yaml|yml|lock)\b/;
 function tidy(text) {
   return text.split('\n').map((l) => (RULE.test(l) ? '────────────' : l)).join('\n');
+}
+// The status bar under the prompt is a dozen segments; on a phone it should be a glance, not a page. These are the
+// ones worth the room, in the order they appear: model, context, banked / weekly subscription, 5h window,
+// branch, permission mode. Everything else is one tap away ("+N").
+const STATUS_KEEP = [
+  /\b(?:fable|opus|sonnet|haiku|gpt|gemini|kimi|grok|codex)\b|xhigh/i,
+  /^ctx\b/i,
+  /banked|\bweek\b/i,
+  /^\d+h\s*\d+%/i,
+  /⌥|\b(?:master|main)\b/,
+  /bypass|permission|accept edits|plan mode/i,
+];
+function statusZone(segs) {
+  const wrap = el('div', 'chips compact');
+  const clean = (s) => s.replace(/\s*\((?:shift\+tab|esc)[^)]*\)/i, '').replace(/(?:\s*[·←])+\s*\d+ agents?$/i, '').replace(/\s*·$/, '').trim();
+  const keep = segs.map((s) => STATUS_KEEP.some((re) => re.test(s)));
+  if (!keep.some(Boolean)) segs.slice(0, 5).forEach((_, i) => { keep[i] = true; });
+  let shown = 0;
+  segs.forEach((s, i) => { if (keep[i] && ++shown > 6) keep[i] = false; });
+  segs.forEach((s, i) => { const c = el('span', keep[i] ? null : 'x', clean(s)); wrap.append(c); });
+  const extra = keep.filter((k) => !k).length;
+  if (extra) {
+    const more = el('span', 'more', '+' + extra);
+    more.addEventListener('click', () => { const open = wrap.classList.toggle('compact'); more.textContent = open ? '+' + extra : 'less'; });
+    wrap.append(more);
+  }
+  return wrap;
+}
+
+function renderBlocks(box, text) {
+  box.textContent = '';
+  const lines = text.replace(/\t/g, '    ').split('\n');
+  // The status zone is whatever sits below the LAST rule near the bottom (Claude Code: prompt box, then status lines).
+  let ruleAt = -1;
+  for (let i = lines.length - 1; i >= Math.max(0, lines.length - 20); i--) { if (RULE.test(lines[i])) { ruleAt = i; break; } }
+  const frag = document.createDocumentFragment();
+  const segs = [];
+  let blank = 0, prevRule = false, skipRule = false;
+  lines.forEach((raw, i) => {
+    const line = raw.replace(/\s+$/, '');
+    if (!line.trim()) { if (++blank === 1 && !prevRule) frag.append(el('div', 'tl gap')); return; }
+    blank = 0;
+    if (RULE.test(line)) {
+      if (skipRule) { skipRule = false; return; }      // the closing rule of an empty prompt box: one divider is enough
+      frag.append(el('div', 'tl rule')); prevRule = true; return;
+    }
+    // An empty prompt box (rule, bare ❯, rule) is three lines of nothing: keep one divider.
+    if (prevRule && /^\s*[❯>]\s*$/.test(line)) { skipRule = true; prevRule = false; return; }
+    prevRule = false;
+    if (ruleAt >= 0 && i > ruleAt) {                                   // status zone: collect, render once
+      const parts = line.trim().split(/\s+[│|]\s+/).filter(Boolean);
+      parts.forEach((p) => segs.push(p));
+      return;
+    }
+    const m = /^(\s*)(.*)$/.exec(line);
+    const ind = m[1].length, body = m[2];
+    const bm = BULLET.exec(body);
+    const mono = BOX.test(line) || ind >= 4 || CODEISH.test(body) || /^⎿/.test(body);   // tool output stays fixed-width, all of it
+    const d = el('div', 'tl' + (mono ? ' mono' : '') + (/^❯/.test(body) ? ' sel' : ''));
+    d.style.setProperty('--ind', ind);
+    if (bm) {
+      // The marker gets a box exactly --hang cells wide, so the text after it starts where a wrapped line will.
+      // A marker with no space after it (the record dot, a checkbox) is a wide glyph: give it one more cell.
+      d.style.setProperty('--hang', bm[0].length + (/[^\x00-\x7f]/.test(bm[0]) ? 1 : 0) + (/\s$/.test(bm[0]) ? 0 : 1));
+      d.append(el('span', 'bm', bm[0].trimEnd()), body.slice(bm[0].length));
+    } else d.append(body);
+    frag.append(d);
+  });
+  if (segs.length) frag.append(statusZone(segs));
+  box.append(frag);
 }
 
 function renderTail(text) {
   const t = $('tail');
   const near = t.scrollHeight - t.scrollTop - t.clientHeight < 60;
-  const frag = document.createDocumentFragment();
-  tidy(text).split('\n').forEach((line, i, arr) => {
-    const s = /^\s*❯/.test(line) ? el('span', 'sel', line) : document.createTextNode(line);
-    frag.append(s);
-    if (i < arr.length - 1) frag.append('\n');
-  });
-  t.textContent = '';
-  t.append(frag);
+  renderBlocks(t, text);
   return near;
 }
 
@@ -1182,4 +1255,4 @@ async function boot() {
   hideSplash(false);
 }
 boot();
-window.shepr = { S, ping, standalone, signHeaders };
+window.shepr = { S, ping, standalone, signHeaders, renderBlocks };

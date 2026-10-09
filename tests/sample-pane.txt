@@ -1,0 +1,21 @@
+● I checked the three open PRs and merged the two that were green.
+
+  Findings:
+  - #34 passed on both Pythons (1488 tests), merged at 4aef18b with a clean squash commit message
+  - #35 had one failing check in the packaging job, so I left it open and commented with the log excerpt
+  1. Read the failing job output and found the missing build dependency in the recipe
+  2. Re-ran after pinning it; green on both architectures
+
+⏺ Bash(git log --oneline -3)
+  ⎿  a3ae047 feat: Shepr, the iPhone app that herds your herdr agents
+     83630c1 fix: pairing QR carried the wrong address
+     30e1b22 test: make the regression check standalone
+
+Anything else to merge before I stop?
+────────────────────────────────────────────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  example-host | LARRY | model xhigh | ctx ▪▪▪▪▪▪▪▪▫▫▫▫ 37% 371k/1M | cache 95%
+  ▸ ~/Projects/burnbar | ⌥ master | +0 −0 | hooks 41/41
+  week 66% · +1% banked ≈1h ahead | 5h 16%
+  ▸▸ bypass permissions on (shift+tab to cycle)

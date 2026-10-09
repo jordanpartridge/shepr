@@ -1063,7 +1063,7 @@ class Handler(SimpleHTTPRequestHandler):
 
             if u.path == "/api/hello" and not post:
                 # The one request every launch makes first: worth a journal line, it is how you see a phone arrive.
-                print(f"shepr: hello from {net} ({(self.headers.get('User-Agent') or '')[:70]})", file=sys.stderr, flush=True)
+                print(f"shepr: hello from {net} build={(self.headers.get('X-Shepr-Build') or '?')[:12]} ({(self.headers.get('User-Agent') or '')[:70]})", file=sys.stderr, flush=True)
                 return self.json_out(200, {"app": "shepr", "v": 1, "name": LOCAL, "t": time.time(),
                                            "paired": bool(devices()), "writes": not READONLY})
             if u.path == "/api/pair" and post:
