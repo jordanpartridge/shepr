@@ -39,6 +39,9 @@ await p.waitForSelector('#tail .tl'); await p.waitForTimeout(900);
 await p.evaluate(() => { const t = document.getElementById('tail'); t.scrollTop = t.scrollHeight; });   // the bottom: where the status chips are
 await p.waitForTimeout(300);
 await shot('session-text');
+await p.click('#slashbtn'); await p.waitForSelector('#slashrow button:not(.more)'); await p.waitForTimeout(500);
+await shot('slash');
+await p.click('#slashbtn');
 await p.click('#dback'); await p.waitForTimeout(400);
 // wake: review sheet (nothing is sent)
 await p.click('#main .secrow .mini-btn'); await p.waitForSelector('#sheet .chk'); await p.waitForTimeout(500);
@@ -48,12 +51,12 @@ await p.click('#sheet .btns button:first-child');
 await tap('.tab[data-view=keys]'); await p.waitForTimeout(1200); await shot('keys');
 await b.close();
 
-// ---- the montage: four captures in phone frames
-const names = [['queue', 'QUEUE', 'needs you first, then sleeping'], ['session-dialog', 'ANSWER A DIALOG', 'options become buttons'], ['session-text', 'READABLE TEXT', 'reflowed, status as chips'], ['wake-confirm', 'WAKE · CONFIRM FIRST', 'every target, the exact text']];
+// ---- the montage: five captures in phone frames
+const names = [['queue', 'QUEUE', 'needs you first, then sleeping'], ['session-dialog', 'ANSWER A DIALOG', 'options become buttons'], ['session-text', 'READABLE TEXT', 'reflowed, status as chips'], ['slash', 'SKILLS', 'last 6 used + MORE'], ['wake-confirm', 'WAKE · CONFIRM FIRST', 'every target, the exact text']];
 const img = (n) => 'data:image/png;base64,' + fs.readFileSync(`${OUT}shots/${n}.png`).toString('base64');
 const html = `<html><body style="margin:0;background:#070a0f;font-family:JetBrains Mono,ui-monospace,monospace"><div id="c" style="width:1400px;padding:34px 40px 26px;box-sizing:border-box;position:relative;
 background:radial-gradient(90% 70% at 50% 40%,#0d2233,#070a0f 70%);background-image:linear-gradient(rgba(0,240,255,.035) 1px,transparent 1px),linear-gradient(90deg,rgba(0,240,255,.035) 1px,transparent 1px);background-size:40px 40px">
-<div style="display:flex;gap:30px;justify-content:center">${names.map(([n, t, s]) => `<div style="width:300px"><div style="border-radius:34px;padding:7px;background:#0b1018;border:2px solid #1a2635;box-shadow:0 0 30px rgba(0,240,255,.12)"><img src="${img(n)}" style="width:100%;display:block;border-radius:27px"></div>
+<div style="display:flex;gap:24px;justify-content:center">${names.map(([n, t, s]) => `<div style="width:240px"><div style="border-radius:34px;padding:7px;background:#0b1018;border:2px solid #1a2635;box-shadow:0 0 30px rgba(0,240,255,.12)"><img src="${img(n)}" style="width:100%;display:block;border-radius:27px"></div>
 <div style="margin-top:14px;text-align:center;color:#00f0ff;font-weight:800;letter-spacing:3px;font-size:14px">${t}</div><div style="text-align:center;color:#8694a5;font-size:12.5px;margin-top:4px">${s}</div></div>`).join('')}</div>
 <div style="text-align:center;color:#8694a5;font-size:12px;letter-spacing:1.5px;margin-top:22px">CAPTURED FROM THE RUNNING APP AGAINST AN ISOLATED TEST HERDR SESSION · THE AGENTS AND THEIR TITLES ARE MADE UP</div></div></body></html>`;
 const b2 = await chromium.launch({ executablePath: '/usr/bin/chromium', args: ['--no-sandbox'] });

@@ -842,6 +842,115 @@ def hosts_view():
             "enroll": f"mkdir -p ~/.ssh && echo '{pk}' >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys" if pk else None}
 
 
+# --------------------------------------------------------------------------------------------
+# slash commands and skills, for the compose box: what exists on this host, and what was used lately
+# --------------------------------------------------------------------------------------------
+BUILTIN_CMDS = [("clear", "Clear the conversation"), ("compact", "Summarise the conversation to free context"),
+                ("context", "Show what is using the context window"), ("cost", "Show token use and cost"),
+                ("model", "Switch model"), ("effort", "Set the thinking effort"), ("resume", "Resume an earlier session"),
+                ("rename", "Rename this session"), ("memory", "Edit memory files"), ("config", "Open settings"),
+                ("status", "Show account and session status"), ("mcp", "Manage MCP servers"), ("agents", "Manage subagents"),
+                ("permissions", "Manage tool permissions"), ("review", "Review a pull request"), ("init", "Create a CLAUDE.md"),
+                ("help", "Show help"), ("rc", "Remote control"), ("btw", "Ask a side question"),
+                ("exit", "Ends the session"), ("quit", "Ends the session")]
+NEVER_RECENT = {"exit", "quit", "logout", "login"}   # a chip that ends the session is a trap on a phone
+_cmd_cache = {"at": 0.0, "all": []}
+
+
+def read_frontmatter(path):
+    """name / description from a SKILL.md or command .md. Tolerant: quoted values, folded (> or |) descriptions."""
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            head = f.read(4000)
+    except OSError:
+        return {}
+    if not head.startswith("---"):
+        return {}
+    block = head.split("---", 2)[1] if head.count("---") >= 2 else ""
+    out, key = {}, None
+    for line in block.splitlines():
+        m = re.match(r"^([A-Za-z_-]+):\s*(.*)$", line)
+        if m:
+            key = m.group(1).lower()
+            v = m.group(2).strip()
+            out[key] = "" if v in (">", "|", ">-", "|-") else v.strip("\"'")
+        elif key and line.startswith((" ", "\t")):
+            out[key] = (out.get(key, "") + " " + line.strip()).strip()
+    return out
+
+
+def one_line(t, n=150):
+    t = re.sub(r"\s+", " ", t or "").strip()
+    return t if len(t) <= n else t[: n - 1].rstrip() + "…"
+
+
+def scan_commands():
+    found = {}
+    def add(name, desc, kind):
+        if name and re.match(r"^[A-Za-z][\w:.-]*$", name) and name not in found:
+            found[name] = {"name": name, "desc": one_line(desc), "kind": kind}
+    for p in sorted(glob.glob(os.path.join(CLAUDE_HOME, "skills", "*", "SKILL.md"))):
+        fm = read_frontmatter(p)
+        add(fm.get("name") or os.path.basename(os.path.dirname(p)), fm.get("description", ""), "skill")
+    for p in sorted(glob.glob(os.path.join(CLAUDE_HOME, "commands", "**", "*.md"), recursive=True)):
+        rel = os.path.relpath(p, os.path.join(CLAUDE_HOME, "commands"))[:-3].replace(os.sep, ":")
+        add(rel, read_frontmatter(p).get("description", ""), "command")
+    # plugins: cache/<marketplace>/<plugin>/<version>/{skills/*/SKILL.md, commands/*.md}; newest version of each plugin
+    base = os.path.join(CLAUDE_HOME, "plugins", "cache")
+    for plug_dir in sorted(glob.glob(os.path.join(base, "*", "*"))):
+        vers = sorted(glob.glob(os.path.join(plug_dir, "*")), key=os.path.getmtime)
+        if not vers:
+            continue
+        v, plug = vers[-1], os.path.basename(plug_dir)
+        for p in sorted(glob.glob(os.path.join(v, "skills", "*", "SKILL.md"))):
+            fm = read_frontmatter(p)
+            add(f"{plug}:{fm.get('name') or os.path.basename(os.path.dirname(p))}", fm.get("description", ""), "plugin")
+        for p in sorted(glob.glob(os.path.join(v, "commands", "*.md"))):
+            add(f"{plug}:{os.path.basename(p)[:-3]}", read_frontmatter(p).get("description", ""), "plugin")
+    for n, d in BUILTIN_CMDS:
+        add(n, d, "builtin")
+    return sorted(found.values(), key=lambda c: c["name"].lower())
+
+
+def recent_commands(limit=6, scan=6000):
+    """The slash commands actually typed lately, newest first, from Claude Code's own prompt history."""
+    names = []
+    try:
+        with open(os.path.join(CLAUDE_HOME, "history.jsonl"), "rb") as f:
+            f.seek(0, os.SEEK_END)
+            size = f.tell()
+            f.seek(max(0, size - 1_500_000))
+            lines = f.read().decode("utf-8", "replace").splitlines()[-scan:]
+    except OSError:
+        return names
+    for line in reversed(lines):
+        try:
+            disp = json.loads(line).get("display") or ""
+        except ValueError:
+            continue
+        # "/name" then whitespace or end: a path like /home/pi/x never matches
+        m = re.match(r"^/([A-Za-z][\w:.-]*)(?:\s|$)", disp)
+        if m and m.group(1) not in names and m.group(1).lower() not in NEVER_RECENT:
+            names.append(m.group(1))
+            if len(names) >= limit:
+                break
+    return names
+
+
+def commands_view(host):
+    local = host["kind"] == "local"
+    now = time.time()
+    if now - _cmd_cache["at"] > 60:
+        _cmd_cache.update(at=now, all=scan_commands())
+    allc = _cmd_cache["all"]
+    if not local:      # a remote host's skills are not read from here: built-ins only, and say so
+        allc = [c for c in allc if c["kind"] == "builtin"]
+    by = {c["name"]: c for c in allc}
+    recent = [by.get(n) or {"name": n, "desc": "", "kind": "used"} for n in (recent_commands() if local else [])]
+    return {"host": host["id"], "local": local, "recent": recent, "all": allc,
+            "note": None if local else "Only built-in commands are listed for a remote host."}
+
+
 def register_plan(plan):
     with LOCK:
         for k in [k for k, p in PLANS.items() if p["expires"] < time.time()]:
@@ -1104,6 +1213,8 @@ class Handler(SimpleHTTPRequestHandler):
                 return self.json_out(200, {"text": text, "lines": n, "menu": parse_menu(read_tail(host, pane, 80))
                                            if a["agent_status"] == "blocked" else None,
                                            "agent": shape_agent(host, a, {}), "at": time.time()})
+            if not post and u.path == "/api/commands":
+                return self.json_out(200, commands_view(need_host(q.get("host", ""))))
             if not post and u.path == "/api/hosts":
                 out = hosts_view()
                 out["devices"] = [dict(dev_public(i, d), you=(i == viewer)) for i, d in devices().items()]

@@ -8,7 +8,7 @@
      3. No timer, retry or "auto" anything ever sends. A failed send is reported, never repeated.
      4. The private key never leaves the phone: it is generated non-extractable and only signs. */
 'use strict';
-const BUILD = 'v9';   // keep equal to sw.js VERSION: shown in Keys and logged by the host, so you can see which app a phone is running
+const BUILD = 'v11';   // keep equal to sw.js VERSION: shown in Keys and logged by the host, so you can see which app a phone is running
 
 // ---------------------------------------------------------------------------
 // 1. Service worker. Without this, a dead tailnet shows Safari's error page and
@@ -758,6 +758,7 @@ function commit(plan, goBtn) {
     }
     S.keybuf = []; paintStage();
     $('msg').value = ''; autosize();
+    if (plan.kind === 'text' && S.cur) noteSlashUse(S.cur.host, S.lastText);
     notify('Sent to ' + (plan.target.title || plan.target.pane), false);
     setTimeout(loadTail, 1400);
     fetchQueue(true);
@@ -769,6 +770,7 @@ function commit(plan, goBtn) {
 }
 
 function prepare(body) {
+  if (body.kind === 'text') S.lastText = body.text;
   const isHost = HOST_KINDS.indexOf(body.kind) >= 0 || body.kind === 'wake';
   if (!isHost && !S.cur) return;
   const b = isHost ? body : Object.assign({ host: S.cur.host, pane: S.cur.pane }, body);
@@ -802,7 +804,8 @@ function openDetail(host, pane, ctx) {
   $('tail').textContent = 'reading…';
   $('toast').hidden = true;
   const g = $('gtoast'); if (g) g.hidden = true;   // a toast left over from the list must not cover this session's buttons
-  paintStage(); paintDetailChrome();
+  S.slashOpen = false; $('msg').value = ''; autosize(); paintStage(); paintDetailChrome();
+  loadCmds(host);
   loadTail(true);
 }
 
@@ -1022,11 +1025,13 @@ function paintDock() {
   if (!key.hidden) {
     (st === 'working' ? [KEYS[3]] : KEYS).forEach((k) => key.append(btn(k[0], '', () => stageKey(k[1]))));
   }
-  const ph = st === 'blocked' ? 'Type an answer, sent with ⏎'
-           : st === 'working' ? 'Working: a prompt waits its turn'
-           : 'Send a prompt' + (S.agent ? ' to ' + S.agent.agent : '');
+  // Short on purpose: the box is narrow now (the / button), and a placeholder that wraps makes the box grow.
+  const ph = st === 'blocked' ? 'Answer, sent with ⏎'
+           : st === 'working' ? 'Queued until it is free'
+           : 'Message ' + (S.agent ? S.agent.agent : '');
   $('msg').placeholder = ph;
   $('send').disabled = !S.agent;
+  paintSlash();
 }
 
 function stageKey(k) {
@@ -1055,6 +1060,96 @@ $('compose').addEventListener('submit', (e) => {
   const text = $('msg').value.trim();
   if (text) prepare({ kind: 'text', text });
 });
+
+// ---- slash row: the last 6 skills/commands you used, tappable; MORE opens a searchable list of every one.
+// Tapping only FILLS the box with "/name ". Nothing is sent: it still goes through the preview sheet like any prompt.
+S.cmds = {};          // host -> {at, data}
+S.slashOpen = false;
+const cmdKey = (h) => 'shepr.slash.' + h;
+function loadCmds(host) {
+  const c = S.cmds[host];
+  if (c && Date.now() - c.at < 5 * 60 * 1000) return Promise.resolve(c.data);
+  return api('api/commands?host=' + encodeURIComponent(host)).then((d) => { S.cmds[host] = { at: Date.now(), data: d }; paintSlash(); return d; })
+    .catch(() => null);
+}
+// What to show: this phone's own recent picks first (they are instant), then the host's history, no duplicates.
+function recentCmds(host, data) {
+  const mine = store.get(cmdKey(host), []);
+  const byName = {}; ((data && data.all) || []).forEach((c) => { byName[c.name] = c; });
+  const names = [];
+  mine.concat(((data && data.recent) || []).map((c) => c.name)).forEach((n) => { if (n && names.indexOf(n) < 0) names.push(n); });
+  return names.slice(0, 6).map((n) => byName[n] || { name: n, desc: '', kind: 'used' });
+}
+function noteSlashUse(host, text) {
+  const m = /^\/([A-Za-z][\w:.-]*)(?:\s|$)/.exec(text || '');
+  if (!m) return;
+  const l = store.get(cmdKey(host), []).filter((x) => x !== m[1]); l.unshift(m[1]); store.set(cmdKey(host), l.slice(0, 12));
+}
+function fillCmd(name) {
+  const t = $('msg'); t.value = '/' + name + ' '; autosize(); S.slashOpen = false; paintSlash();
+  t.focus(); try { t.setSelectionRange(t.value.length, t.value.length); } catch (e) { /* ignore */ }
+}
+function paintSlash() {
+  const row = $('slashrow'), btn_ = $('slashbtn');
+  const st = S.agent ? S.agent.status : null;
+  // A session sitting at a dialog takes typed text INTO the dialog: a slash command makes no sense there.
+  const allowed = !!S.cur && !!S.agent && st !== 'blocked';
+  btn_.hidden = !allowed;
+  const v = $('msg').value;
+  const typing = /^\/\S*$/.test(v);
+  const show = allowed && (S.slashOpen || typing);
+  btn_.classList.toggle('on', show);
+  row.hidden = !show; row.textContent = '';
+  if (!show) return;
+  const data = (S.cmds[S.cur.host] || {}).data;
+  let list;
+  if (typing && v.length > 1) {
+    const q = v.slice(1).toLowerCase();
+    const all = (data && data.all) || [];
+    list = all.filter((c) => c.name.toLowerCase().startsWith(q)).concat(all.filter((c) => !c.name.toLowerCase().startsWith(q) && c.name.toLowerCase().includes(q))).slice(0, 6);
+  } else list = recentCmds(S.cur.host, data);
+  list.forEach((c) => { const b = el('button', null, '/' + c.name); b.type = 'button'; b.addEventListener('click', () => fillCmd(c.name)); row.append(b); });
+  if (!list.length) row.append(el('span', 'none', data ? 'No match' : 'Loading…'));
+  const more = el('button', 'more', 'MORE'); more.type = 'button';
+  more.addEventListener('click', () => openSlashSheet(typing ? v.slice(1) : ''));
+  row.append(more);
+}
+function openSlashSheet(prefill) {
+  const host = S.cur ? S.cur.host : null;
+  if (!host) return;
+  const box = el('div');
+  box.style.cssText = 'display:flex;flex-direction:column;min-height:0';
+  const inp = el('input', 'search'); inp.type = 'search'; inp.placeholder = 'Search skills and commands';
+  inp.value = prefill || ''; inp.autocomplete = 'off'; inp.autocapitalize = 'off'; inp.spellcheck = false;
+  const list = el('div', 'golist');
+  const closeRow = el('div', 'btns'); closeRow.style.marginTop = '8px'; closeRow.append(btn('Close', '', closeSheet));
+  box.append(inp, list, closeRow);
+  const draw = (data) => {
+    list.textContent = '';
+    if (!data) { list.append(el('div', 'empty', 'Could not read the list from this host.')); return; }
+    const recent = recentCmds(host, data).map((c) => c.name);
+    const toks = inp.value.toLowerCase().replace(/^\//, '').split(/\s+/).filter(Boolean);
+    const hits = data.all.filter((c) => toks.every((t) => (c.name + ' ' + c.desc).toLowerCase().includes(t)))
+      .sort((a, b) => (recent.indexOf(a.name) < 0 ? 99 : recent.indexOf(a.name)) - (recent.indexOf(b.name) < 0 ? 99 : recent.indexOf(b.name)) || a.name.localeCompare(b.name));
+    if (!hits.length) list.append(el('div', 'empty', 'Nothing matches.'));
+    hits.slice(0, 80).forEach((c) => {
+      const b = el('button', 'cmd' + (recent.indexOf(c.name) >= 0 ? ' rec' : '')); b.type = 'button';
+      b.append(el('span', 'k', c.kind), el('span', 'n', '/' + c.name), el('span', 'd', c.desc || ' '));
+      b.addEventListener('click', () => { closeSheet(); fillCmd(c.name); });
+      list.append(b);
+    });
+    if (data.note) list.append(el('div', 'dim fine', data.note));
+  };
+  inp.addEventListener('input', () => draw((S.cmds[host] || {}).data));
+  openSheet(box);
+  list.append(el('div', 'empty', 'Loading…'));
+  loadCmds(host).then(draw);
+}
+$('slashbtn').addEventListener('click', () => {
+  S.slashOpen = !S.slashOpen; paintSlash();
+  if (S.cur) loadCmds(S.cur.host);
+});
+$('msg').addEventListener('input', () => { paintSlash(); if (S.cur && /^\//.test($('msg').value)) loadCmds(S.cur.host); });
 
 // ---- toasts: inside the session view, or floating above the tab bar elsewhere
 let toastT = null;

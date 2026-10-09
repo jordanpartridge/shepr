@@ -428,3 +428,21 @@ button{font:inherit;color:inherit}
 .chips.compact span.x{display:none}
 .chips .more{color:var(--accent);border-color:rgba(0,240,255,.4);background:rgba(0,240,255,.07);font-weight:700}
 .chips{margin-top:6px}
+
+/* ---- slash row: the skills you use most, one tap each; MORE searches all of them ---- */
+.slashrow{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:6px}
+.slashrow button{min-height:40px;padding:0 13px;border-radius:12px;border:1px solid rgba(0,240,255,.35);background:rgba(0,240,255,.06);
+  color:var(--accent);font:700 16px ui-monospace,SFMono-Regular,Menlo,monospace;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.slashrow button:active{background:rgba(0,240,255,.18)}
+.slashrow button.more{color:#04141a;background:var(--accent);border-color:var(--accent);font-family:inherit;font-weight:800}
+.slashrow .none{color:var(--dim);font-size:15px;align-self:center}
+.slashbtn{flex:0 0 auto;width:44px;min-height:44px;border-radius:12px;border:1px solid var(--line);background:var(--card);
+  color:var(--accent);font:800 22px ui-monospace,Menlo,monospace}
+.slashbtn.on{background:rgba(0,240,255,.15);border-color:var(--accent)}
+.slashbtn[hidden]{display:none}
+.cmd{display:block;width:100%;text-align:left;padding:10px 14px;border-radius:12px;border:1px solid var(--line);background:var(--card)}
+.cmd .n{display:block;font:700 17px ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--accent)}
+.cmd .d{display:block;margin-top:2px;font-size:14px;line-height:1.35;color:var(--dim);display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.cmd .k{float:right;font-size:11px;font-weight:800;letter-spacing:.8px;text-transform:uppercase;color:var(--dim)}
+.cmd.rec{border-color:rgba(0,240,255,.35)}
+.cmd:active{background:#14202f}

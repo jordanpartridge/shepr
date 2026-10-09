@@ -1,6 +1,6 @@
 # PRD: slash-command and skill options in the compose box (PARKED, 2026-10-08 23:5x)
 
-Status: **DECIDED, not built.** Requested after the 11 PM park-it cutoff, so it waits until Fred has slept.
+Status: **BUILT 2026-10-09 (build v10)** after Fred decided on A. See README, "Skills and slash commands".
 **Decision (Fred, 2026-10-09 ~00:05): A, shaped as: a tappable row of the LAST 6 skills he used, plus search over all of them behind a MORE button.**
 Request, verbatim: "Can you pass the options when I try to use a skill with /'s".
 

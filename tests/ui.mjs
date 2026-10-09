@@ -160,6 +160,40 @@ const browser = await chromium.launch({ executablePath: '/usr/bin/chromium', arg
   console.log('   wake result:', wres.slice(0, 160));
   check('wake reports honestly (the fake agent refuses a prompt, and it says so)', /failed|Woke/.test(wres));
 
+  // ---- slash row: last 6 used, tap fills (never sends), MORE searches all, none on a blocked session
+  const idleA = await page.evaluate(() => window.shepr.S.q.agents.find((a) => a.status === 'idle'));
+  await tap(page, `.item[data-key="${idleA.host}|${idleA.pane}"]`);
+  await page.waitForSelector('#detail:not([hidden])'); await page.waitForSelector('#slashbtn:not([hidden])', { timeout: 8000 });
+  await page.click('#slashbtn'); await page.waitForSelector('#slashrow:not([hidden]) button:not(.more)');
+  const chips = await page.$$eval('#slashrow button:not(.more)', (n) => n.map((x) => x.textContent));
+  console.log('   slash chips:', chips.join(' '));
+  check('slash row: last 6 used, newest first, no /exit, no paths', JSON.stringify(chips) === JSON.stringify(['/Beta', '/effort', '/plug:delta', '/Alpha', '/model', '/Gamma']));
+  await page.screenshot({ path: `${OUT}/sl1-row.png` });
+  await page.click('#slashrow button:first-child');
+  check('tapping a chip fills the box with /name and sends nothing', (await page.inputValue('#msg')) === '/Beta ' && (await page.$eval('#sheet', (n) => n.hidden)));
+  await page.fill('#msg', '/al');
+  check('typing / filters the row to matches', (await page.$$eval('#slashrow button:not(.more)', (n) => n.map((x) => x.textContent))).includes('/Alpha'));
+  await page.fill('#msg', '');
+  await page.click('#slashbtn');                                                     // open the row again
+  await page.click('#slashrow .more'); await page.waitForSelector('#sheet:not([hidden]) .cmd');
+  await page.fill('#sheet .search', 'delta'); await page.waitForTimeout(200);
+  const found = await page.$$eval('#sheet .cmd .n', (n) => n.map((x) => x.textContent));
+  check('MORE searches every skill, including plugin skills', found.length === 1 && found[0] === '/plug:delta');
+  await page.fill('#sheet .search', 'fixture'); await page.waitForTimeout(200);
+  await page.screenshot({ path: `${OUT}/sl2-more.png` });
+  check('MORE search matches descriptions too (3 fixture skills)', (await page.$$('#sheet .cmd')).length === 3);
+  await page.click('#sheet .cmd:first-child');
+  check('picking from MORE fills the box', /^\/[A-Za-z]/.test(await page.inputValue('#msg')) && (await page.$eval('#sheet', (n) => n.hidden)));
+  await page.fill('#msg', '/Alpha please'); await page.click('#send'); await page.waitForSelector('#sheet:not([hidden]) .kv');
+  check('a slash command still goes through the preview sheet', (await page.textContent('#sheet .kv')).includes('/Alpha please'));
+  await page.click('#sheet .btns button:first-child'); await page.fill('#msg', '');
+  await page.click('#dback'); await page.waitForTimeout(300);
+  const blk = await page.evaluate(() => window.shepr.S.q.agents.find((a) => a.status === 'blocked'));
+  await tap(page, `.item[data-key="${blk.host}|${blk.pane}"]`);
+  await page.waitForSelector('#detail:not([hidden])'); await page.waitForSelector('#optrow button'); await page.waitForTimeout(400);
+  check('a session at a dialog offers no slash command', await page.$eval('#slashbtn', (n) => n.hidden));
+  await page.click('#dback'); await page.waitForTimeout(300);
+
   // ---- session text is big and adjustable
   await tap(page, '.item:nth-of-type(2)');
   await page.waitForSelector('#detail:not([hidden])'); await page.waitForTimeout(600);

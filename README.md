@@ -60,6 +60,16 @@ compact strip of chips: model, context, banked / weekly subscription, 5h window,
 the rest behind one **+N** tap. **A−** / **A+** change the size (it remembers). Text only ever goes through `textContent`: whatever an
 agent prints is data, never markup.
 
+### Skills and slash commands
+
+In a session, tap **/** next to the message box (or just type `/`): a row shows the **last 6 skills and commands you
+actually used**, newest first (read from Claude Code's own prompt history on the host). Tap one and it fills the box
+with `/name `; it never sends. **MORE** opens a searchable list of everything on the host (your skills, plugin skills,
+built-in commands), matching names and descriptions. Typing `/be…` filters the row as you go. `/exit` and `/quit` are
+never offered as a one-tap chip, and a session sitting at a dialog gets no slash row (typing goes into the dialog).
+A slash command still goes through the preview-and-confirm sheet like any prompt. For a remote host only the built-in
+commands are listed: its skills are not read from here.
+
 ### Wake
 
 **Sleeping > Wake…** lists the idle sessions (all ticked) and one message (default "Continue where you left off.").
