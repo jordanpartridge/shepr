@@ -1,6 +1,7 @@
 # PRD: slash-command and skill options in the compose box (PARKED, 2026-10-08 23:5x)
 
-Status: **not built.** Requested after the 11 PM park-it cutoff, so it is written up and waits for tomorrow.
+Status: **DECIDED, not built.** Requested after the 11 PM park-it cutoff, so it waits until Fred has slept.
+**Decision (Fred, 2026-10-09 ~00:05): A, shaped as: a tappable row of the LAST 6 skills he used, plus search over all of them behind a MORE button.**
 Request, verbatim: "Can you pass the options when I try to use a skill with /'s".
 
 ## What it probably means (needs one answer from Fred)
@@ -25,6 +26,16 @@ you confirm" design. **Recommendation: A.**
   authoritative "user-invocable" set but is not exposed on disk as one file.
 - Shepr already has the pieces: `/api/pane` reads a session, `prepare`/`commit` sends, the Go To sheet is a
   searchable list that could be reused.
+
+## Decided shape (Fred's words: "a tappable skill list of the last 6 ones I use and searchable for all of them with a MORE button")
+
+- In a session's compose box, typing `/` (or a **/** button next to the box) shows ONE row: the last 6 skills/commands he
+  actually used, most recent first. Tap = fills the box with `/name ` (never sends).
+- **MORE** opens a searchable sheet of every skill and command on the host (name + one-line description), filtered as
+  you type; tap fills the box and closes it.
+- "Last 6 used" comes from the host: scan the recent session transcripts / prompt history for `/name` invocations
+  (cheap, local) and fall back to the phone's own recent picks until that exists. Remember per host.
+- Sending still goes through the normal preview-and-confirm sheet. A blocked session at a dialog gets no slash row.
 
 ## Proposal (A)
 
