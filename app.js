@@ -38,6 +38,13 @@ const store = {
 const REDUCED = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 const clock = (sec) => new Date(sec * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 const keyOf = (a) => a.host + '|' + a.pane;
+// What a session is CALLED everywhere: its project (the directory it runs in), never herdr's session title,
+// which is a summary of the last conversation and changes under you. Two sessions in one project on one
+// host get their pane id added so they can be told apart.
+function label(a) {
+  const same = (S.q ? S.q.agents : []).filter((x) => x.host === a.host && x.project === a.project);
+  return same.length > 1 ? a.project + ' · ' + a.pane : a.project;
+}
 const enc = new TextEncoder();
 const b64u = (buf) => btoa(String.fromCharCode.apply(null, new Uint8Array(buf))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 const hex = (buf) => Array.prototype.map.call(new Uint8Array(buf), (x) => x.toString(16).padStart(2, '0')).join('');
@@ -333,7 +340,7 @@ function itemNode(a, ctx, compact, idx) {
     n.append(d);
   } else n.append(ageBox(a));
   const m = el('div', 'meta');
-  m.append(el('div', 'ttl', a.title), el('div', 'sub', [a.host, a.project, a.agent].join(' · ')));
+  m.append(el('div', 'ttl', label(a)), el('div', 'sub', [a.host, a.agent].join(' · ')));
   n.append(m, el('div', 'chev', '›'));
   gesture(n, { tap: () => openDetail(a.host, a.pane, ctx), long: () => openPeek(a, ctx) });
   return n;
@@ -597,7 +604,7 @@ function btn(text, cls, fn) {
 // ---- peek (hold a row): the last lines without leaving the list
 function openPeek(a, ctx) {
   const box = el('div');
-  box.append(el('h3', null, a.title), el('div', 'sub', [a.host, a.project, STATE_LABEL[a.status] || a.status].join(' · ')));
+  box.append(el('h3', null, label(a)), el('div', 'sub', [a.host, STATE_LABEL[a.status] || a.status].join(' · ')));
   const pre = el('pre', 'peek selectable', 'reading…');
   box.append(pre);
   const row = el('div', 'btns');
@@ -652,7 +659,7 @@ function showPlan(plan) {
   const isHost = HOST_KINDS.indexOf(plan.kind) >= 0;
   const box = el('div');
   box.append(el('h3', null, plan.approves ? 'This approves it. Send?' : isHost ? 'Make this change?' : 'Send this?'),
-             el('div', 'sub', [t.host, t.project, t.title].filter(Boolean).join(' · ') + (t.status ? ' · ' + (STATE_LABEL[t.status] || t.status) : '')));
+             el('div', 'sub', [t.host, t.title, t.pane].filter(Boolean).join(' · ') + (t.status ? ' · ' + (STATE_LABEL[t.status] || t.status) : '')));
   if (plan.approves) box.append(el('div', 'warnbox', 'The option you picked reads like an approval. Check it is what you mean.'));
   const kv = el('div', 'kv selectable');
   plan.lines.forEach((l) => { kv.append(el('div', 'k', l.k), el('div', 'v', l.v)); });
@@ -736,8 +743,8 @@ function paintDetailChrome() {
   const a = byKey(S.cur.host + '|' + S.cur.pane) || S.agent;
   const { l, i } = position();
   if (a) {
-    $('dtitle').textContent = a.title;
-    $('dsub').textContent = [a.host, a.project, a.agent].join(' · ');
+    $('dtitle').textContent = label(a);
+    $('dsub').textContent = [a.host, a.agent, a.pane].join(' · ');
     const st = $('dstate');
     let txt = STATE_LABEL[a.status] || a.status;
     if (a.for_s != null) txt += ' ' + fmtAge(a.for_s, a.exact).main + (fmtAge(a.for_s, a.exact).sub || '');

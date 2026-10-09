@@ -22,7 +22,7 @@ mk(){ # label cwd state [agent]
 case "${1:-}" in
   up)
     (setsid nohup herdr --session hrtest server >/dev/null 2>&1 < /dev/null &); sleep 3
-    mk alpha "$HOME/Projects" blocked; mk beta "$HOME/Projects" blocked; mk gamma "$HOME/Projects" working codex; mk delta "$HOME/Projects" idle ;;
+    mk alpha "$HOME/Projects/burnbar" blocked; mk beta "$HOME/Projects/clarity" blocked; mk gamma "$HOME/Projects/blip" working codex; mk delta "$HOME/Projects/infomarchy" idle; mk epsilon "$HOME/Projects/clarity" blocked ;;
   down) herdr session stop hrtest < /dev/null ;;
   env) echo "export HERDR_SOCKET_PATH=$SOCK HERDR_REMOTE_STATE=/tmp/hr-test-state HERDR_REMOTE_POLL=3" ;;
   *) sed -n '2,12p' "$0"; exit 1 ;;

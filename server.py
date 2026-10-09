@@ -413,8 +413,8 @@ def build_plan(body):
         PLANS[plan["nonce"]] = plan
     return {
         "nonce": plan["nonce"], "kind": kind, "expires_s": NONCE_TTL_S, "approves": approves,
-        "target": {"host": host["id"], "pane": pane, "title": a.get("terminal_title_stripped") or pane,
-                   "project": os.path.basename((a.get("cwd") or "").rstrip("/")), "status": status},
+        "target": {"host": host["id"], "pane": pane,
+                   "title": os.path.basename((a.get("cwd") or "").rstrip("/")) or pane, "project": "", "status": status},
         "lines": [{"k": k, "v": v} for k, v in lines],
     }
 
