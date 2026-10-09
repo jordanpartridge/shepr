@@ -209,6 +209,8 @@ button{font:inherit;color:inherit}
 .drow.opts button{color:var(--accent)}
 .drow.opts button.cur{border-color:var(--accent)}
 .drow.opts button.appr{color:var(--warn)}
+.drow.opts button.tog.on{background:rgba(0,240,255,.16);border-color:var(--accent);color:#fff}
+.drow.opts button.tog-go{flex:1.8 1 0;background:var(--accent);border-color:var(--accent);color:#04141a}
 .compose{display:flex;gap:8px;align-items:flex-end}
 .compose textarea{flex:1 1 auto;min-width:0;resize:none;max-height:92px;min-height:44px;padding:10px 12px;
   border-radius:12px;border:1px solid var(--line);background:var(--bg);color:#fff;

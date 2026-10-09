@@ -8,7 +8,7 @@
      3. No timer, retry or "auto" anything ever sends. A failed send is reported, never repeated.
      4. The private key never leaves the phone: it is generated non-extractable and only signs. */
 'use strict';
-const BUILD = 'v13';   // keep equal to sw.js VERSION: shown in Keys and logged by the host, so you can see which app a phone is running
+const BUILD = 'v14';   // keep equal to sw.js VERSION: shown in Keys and logged by the host, so you can see which app a phone is running
 
 // ---------------------------------------------------------------------------
 // 1. Service worker. Without this, a dead tailnet shows Safari's error page and
@@ -829,7 +829,7 @@ function openDetail(host, pane, ctx) {
   const k = host + '|' + pane;
   if (S.cur && (S.cur.host + '|' + S.cur.pane) !== k) S.prevKey = S.cur.host + '|' + S.cur.pane;
   S.cur = { host, pane }; S.ctx = ctx || S.ctx;
-  S.tailText = null; S.menu = null; S.agent = null; S.keybuf = [];
+  S.tailText = null; S.menu = null; S.agent = null; S.keybuf = []; S.selSig = null;
   const rec = store.get('shepr.recent', []).filter((x) => x !== k);
   rec.unshift(k); store.set('shepr.recent', rec.slice(0, 12));
   try { history.replaceState(null, '', '#' + encodeURIComponent(host) + '/' + encodeURIComponent(pane)); } catch (e) { /* ignore */ }
@@ -1049,7 +1049,8 @@ function paintDock() {
   const m = S.menu;
   opt.hidden = !(st === 'blocked' && m && m.options.length);
   if (!opt.hidden) {
-    m.options.forEach((o) => {
+    if (m.multi) paintMulti(opt, m);
+    else m.options.forEach((o) => {
       const b = btn(String(o.n), (o.n === m.current ? 'cur ' : '') + (o.approves ? 'appr' : ''), () => prepare({ kind: 'choose', option: o.n }));
       b.setAttribute('aria-label', 'Pick option ' + o.n + ': ' + o.label);
       opt.append(b);
@@ -1066,6 +1067,27 @@ function paintDock() {
   $('msg').placeholder = ph;
   $('send').disabled = !S.agent;
   paintSlash();
+}
+
+// A "tick all that apply" question. Tapping a number only changes the buttons on your phone; nothing is sent until
+// Submit / Next, which shows exactly what will be ticked and pressed and waits for you to confirm.
+function paintMulti(opt, m) {
+  const tog = m.options.filter((o) => o.checked !== null && !o.free && o.n <= 9);
+  const sig = JSON.stringify(m.options.map((o) => [o.n, o.label, o.checked]));
+  if (S.selSig !== sig) { S.selSig = sig; S.sel = new Set(tog.filter((o) => o.checked).map((o) => o.n)); }
+  tog.forEach((o) => {
+    const on = S.sel.has(o.n);
+    const b = btn((on ? '\u2713 ' : '') + o.n, 'tog' + (on ? ' on' : ''), () => {
+      if (S.sel.has(o.n)) S.sel.delete(o.n); else S.sel.add(o.n);
+      paintDock();
+    });
+    b.setAttribute('aria-pressed', on ? 'true' : 'false');
+    b.setAttribute('aria-label', (on ? 'Ticked' : 'Not ticked') + ', option ' + o.n + ': ' + o.label);
+    opt.append(b);
+  });
+  const go = btn(m.action.label + '\u2026', 'tog-go', () => prepare({ kind: 'multi', picks: Array.from(S.sel).sort((a, b) => a - b), advance: true }));
+  go.setAttribute('aria-label', m.action.label + ' with ' + S.sel.size + ' ticked');
+  opt.append(go);
 }
 
 function stageKey(k) {

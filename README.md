@@ -74,6 +74,7 @@ commands are listed: its skills are not read from here.
 
 **Sleeping > Wake…** lists the idle sessions (all ticked) and one message (default "Continue where you left off.").
 **Review** shows every target and the exact text; **Wake them** sends one prompt each, half a second apart. It only
+**Tick-several questions** (Claude's multi-select, `[ ]` boxes): tap the numbers to tick them on your phone, then **Submit…** (or **Next…** inside a multi-question form) shows what will be ticked and which keys go, and you confirm. Each digit is sent as its own keypress, because Claude reads a burst of digits as pasted text and ticks nothing. "Type something" is not tickable from the phone yet.
 ever touches **idle or finished** sessions: a blocked one is a question waiting on you, and is refused outright, so
 this can never answer or approve a dialog. A session that moved on since you looked is skipped. It declines while
 the host's load is above its core count.

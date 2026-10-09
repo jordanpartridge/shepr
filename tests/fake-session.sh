@@ -33,6 +33,10 @@ case "${1:-}" in
     mk blip "$HOME/Projects/blip" working codex "Release notes draft"
     mk infomarchy "$HOME/Projects/infomarchy" idle claude "Herdr project list sort order" "$HERE/sample-pane.txt"
     mk clarity "$HOME/Projects/clarity" blocked claude "Herder workflow automation" ;;
+  multi) H workspace list | python3 -c 'import json,sys;[print(w["workspace_id"]) for w in json.load(sys.stdin)["result"]["workspaces"] if w["label"]=="multi"]' | while read w; do H workspace close "$w" >/dev/null; done
+    HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    mk multi "$HOME/Projects/whats-next" blocked claude "Project customization walkthrough" "$HERE/sample-multi.txt" ;;
+  multi-rm) H workspace list | python3 -c 'import json,sys;[print(w["workspace_id"]) for w in json.load(sys.stdin)["result"]["workspaces"] if w["label"]=="multi"]' | while read w; do H workspace close "$w" >/dev/null; done ;;
   down) herdr session stop hrtest < /dev/null ;;
   env) echo "export HERDR_SOCKET_PATH=$SOCK SHEPR_STATE=/tmp/shepr-test-state SHEPR_POLL=3" ;;
   *) sed -n '2,12p' "$0"; exit 1 ;;

@@ -289,6 +289,43 @@ const browser = await chromium.launch({ executablePath: '/usr/bin/chromium', arg
   await page.screenshot({ path: `${OUT}/k1-keys.png` });
   check('Keys view shows the device fingerprint', (await page.textContent('#main')).includes('SHA256:'));
 
+  // ---- tick-several questions: tapping only ticks on the phone, Submit shows exactly what will be pressed
+  {
+    const fs_ = new URL('./fake-session.sh', import.meta.url).pathname;
+    execFileSync('bash', [fs_, 'multi'], { env: ENV, encoding: 'utf8' });
+    await page.waitForFunction(() => window.shepr.S.q && window.shepr.S.q.agents.some((a) => a.wlabel === 'multi'), null, { timeout: 15000 }).catch(async () => {
+      await page.click('#refresh'); await page.waitForTimeout(4000);
+    });
+    const key = await page.evaluate(() => { const a = window.shepr.S.q.agents.find((x) => x.wlabel === 'multi'); return a && (a.host + '|' + a.pane); });
+    check('the tick-several fixture session is visible, named by its workspace', !!key);
+    if (key) {
+      await tap(page, '.tab[data-view=waiting]'); await page.waitForTimeout(400);
+      await tap(page, `.item[data-key="${key}"]`);
+      await page.waitForSelector('#detail:not([hidden])'); await page.waitForSelector('#optrow .tog', { timeout: 8000 });
+      const labels = await page.$$eval('#optrow button', (n) => n.map((x) => x.textContent.trim()));
+      console.log('   multi buttons:', JSON.stringify(labels));
+      check('multi: four tick buttons and a Submit button, no "Type something"', labels.length === 5 && /^Submit/.test(labels[4]));
+      check('multi: the option already ticked on screen starts ticked', (await page.$$eval('#optrow .tog.on', (n) => n.map((x) => x.textContent.trim()))).join() === '\u2713 2');
+      await page.click('#optrow .tog:nth-child(1)'); await page.click('#optrow .tog:nth-child(3)');
+      check('multi: tapping ticks on the phone and sends nothing', (await page.$$eval('#optrow .tog.on', (n) => n.length)) === 3 && (await page.locator('#sheet:not([hidden])').count()) === 0);
+      await page.screenshot({ path: `${OUT}/m1-multi.png` });
+      await page.click('#optrow .tog-go');
+      await page.waitForSelector('#sheet:not([hidden]) .kv');
+      const kv = await page.textContent('#sheet .kv');
+      console.log('   multi plan:', kv.replace(/\s+/g, ' ').trim());
+      check('multi: the sheet lists what gets ticked and pressed', /Ticks/.test(kv) && /1\. Alpha/.test(kv) && /3\. Charlie/.test(kv) && /Submit/.test(kv) && /1 3 \u2193 \u2193 \u2193 \u2193 \u2193 \u23ce/.test(kv));
+      await page.screenshot({ path: `${OUT}/m2-multi-confirm.png` });
+      await page.click('#sheet .btns button:first-child');
+      const r = await page.evaluate(async (k) => { const [host, pane] = k.split('|'); const body = JSON.stringify({ host, pane, kind: 'choose', option: 1 });
+        const res = await fetch('api/send/prepare', { method: 'POST', body, headers: Object.assign({ 'Content-Type': 'application/json', 'X-Shepr': '1' }, await window.shepr.signHeaders('POST', 'api/send/prepare', body)) });
+        return res.status + ' ' + (await res.text()); }, key);
+      console.log('   choose on multi:', r.slice(0, 160));
+      check('multi: choosing a single option on a tick-several question is refused', /multi_select|tick/i.test(String(r)));
+    }
+    await page.click('#dback').catch(() => {}); await page.waitForTimeout(500);
+    execFileSync('bash', [fs_, 'multi-rm'], { env: ENV, encoding: 'utf8' });
+  }
+
   // ---- revocation signs the phone out
   cli('revoke', myId);
   await page.evaluate(() => window.shepr.S.q && fetch('api/queue').catch(() => 0));

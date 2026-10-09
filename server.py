@@ -53,6 +53,9 @@ PANE_RE = re.compile(r"^w[0-9A-Za-z]+:p[0-9A-Za-z]+$")
 ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[@-_]")
 CTRL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 OPT_RE = re.compile(r"^\s*(❯|>)?\s*(\d{1,2})\.\s+(\S.*?)\s*$")
+CHK_RE = re.compile(r"^\[( |✔|✓|x|X)\]\s*(.*)$")             # a multi-select option: "[ ] label" or "[✔] label"
+ACT_RE = re.compile(r"^\s*(❯|>)?\s+(Submit|Next)\s*$")           # the unnumbered row that ends a multi-select question
+FREE_RE = re.compile(r"^type something", re.I)
 APPROVE_RE = re.compile(r"^(yes|allow|approve|accept|proceed|always|trust|continue)\b", re.I)
 
 # What a phone may press. Letters and digits cover y/n and numbered menus; no ctrl-chords, because
@@ -314,12 +317,15 @@ def build_queue():
 # reading a dialog, and planning a send
 # --------------------------------------------------------------------------------------------
 def parse_menu(text):
-    """Find the live numbered menu at the bottom of a pane, e.g. Claude Code's AskUserQuestion or a
-    permission dialog. Returns {"current": n, "options": [{"n","label","approves"}]} or None."""
+    """Find the live menu at the bottom of a pane, e.g. Claude Code's AskUserQuestion or a permission dialog.
+    Single choice: {"current": n, "options": [{"n","label","approves"}]}.
+    Multi-select adds "multi": True, a "checked" flag on each toggle, and "action": the Submit / Next row. In that
+    layout the cursor can sit on the unnumbered action row, which is why "idx" (position among everything the
+    cursor can land on, top to bottom) is what key counts are made from, never the option number."""
     lines = text.split("\n")
     cur = None
     for i in range(len(lines) - 1, max(-1, len(lines) - 30), -1):
-        m = OPT_RE.match(lines[i])
+        m = OPT_RE.match(lines[i]) or ACT_RE.match(lines[i])
         if m and m.group(1):
             cur = i
             break
@@ -327,18 +333,41 @@ def parse_menu(text):
         return None
     hits = [(i, int(m.group(2)), m.group(3), bool(m.group(1)))
             for i, l in enumerate(lines) if i >= max(0, cur - 20) and (m := OPT_RE.match(l))]
-    starts = [k for k, h in enumerate(hits) if h[1] == 1 and h[0] <= cur]
+    starts = [k for k, h in enumerate(hits) if h[1] == 1 and h[0] <= max(cur, 0)]
     if not starts:
         return None
     run = [hits[starts[-1]]]
     for h in hits[starts[-1] + 1:]:
         if h[1] == run[-1][1] + 1:
             run.append(h)
-    current = next((h[1] for h in run if h[0] == cur), None)
-    if current is None:
+    # everything the cursor can land on, in screen order: the numbered rows plus a Submit / Next row between them
+    rows = [("opt", h[0], h[1]) for h in run]
+    act = None
+    for i in range(run[0][0], min(len(lines), run[-1][0] + 4)):
+        m = ACT_RE.match(lines[i])
+        if m and not OPT_RE.match(lines[i]):
+            act = (i, m.group(2), bool(m.group(1)))
+            rows.append(("act", i, 0))
+    rows.sort(key=lambda r: r[1])
+    cur_idx = next((k for k, r in enumerate(rows) if r[1] == cur), None)
+    if cur_idx is None:
         return None
-    return {"current": current,
-            "options": [{"n": h[1], "label": h[2], "approves": bool(APPROVE_RE.match(h[2]))} for h in run]}
+    opts = []
+    for h in run:
+        label, checked = h[2], None
+        c = CHK_RE.match(label)
+        if c:
+            checked, label = c.group(1) != " ", c.group(2) or "(blank)"
+        opts.append({"n": h[1], "label": label, "approves": bool(APPROVE_RE.match(label)), "checked": checked,
+                     "free": bool(FREE_RE.match(label)), "idx": next(k for k, r in enumerate(rows) if r[1] == h[0])})
+    multi = sum(1 for o in opts if o["checked"] is not None) >= 2 and act is not None
+    cur_n = next((h[1] for h in run if h[0] == cur), None)
+    if cur_n is None and not multi:
+        return None
+    out = {"current": cur_n or 0, "cur_idx": cur_idx, "options": opts, "multi": multi}
+    if multi:
+        out["action"] = {"label": act[1], "idx": next(k for k, r in enumerate(rows) if r[0] == "act"), "focused": act[2]}
+    return out
 
 
 def human_keys(keys):
@@ -409,13 +438,49 @@ def build_plan(body):
         opt = menu and next((o for o in menu["options"] if o["n"] == n), None)
         if not opt:
             raise HerdrError("no_menu", f"no option {n} on screen right now")
-        d = n - menu["current"]
+        if menu.get("multi"):
+            raise HerdrError("multi_select", "this question lets you tick several options: tick them, then use Submit")
+        d = opt["idx"] - menu["cur_idx"]
         keys = (["down"] if d > 0 else ["up"]) * abs(d) + ["enter"]
         steps = [{"op": "keys", "keys": keys}]
         approves = opt["approves"]
         lines = [("Picks", f"{n}. {opt['label']}"), ("By pressing", human_keys(keys))]
+    elif kind == "multi":
+        if status != "blocked":
+            raise HerdrError("not_blocked", "ticking options only applies to a blocked agent")
+        menu = parse_menu(read_tail(host, pane, 80))
+        if not menu or not menu.get("multi"):
+            raise HerdrError("no_menu", "there is no tick-several question on screen right now")
+        picks = body.get("picks")
+        if not isinstance(picks, list) or not all(isinstance(x, int) and not isinstance(x, bool) for x in picks):
+            raise HerdrError("bad_option", "picks must be a list of option numbers")
+        tick = {o["n"]: o for o in menu["options"] if o["checked"] is not None and not o["free"] and o["n"] <= 9}
+        if any(x not in tick for x in picks):
+            raise HerdrError("bad_option", "one of those is not an option you can tick here")
+        want = set(picks)
+        flip = [n for n in sorted(tick) if (n in want) != tick[n]["checked"]]
+        advance = bool(body.get("advance", True))
+        if not flip and not advance:
+            raise HerdrError("nothing", "that is already how it looks on screen")
+        # A digit toggles that option in place and leaves the cursor where it was, so the ticks need no navigation.
+        # Each digit is its own keypress with a pause after it: sent together, Claude reads "13" as pasted text and ticks nothing.
+        keys = [str(n) for n in flip]
+        act = menu["action"]
+        steps = [{"op": "keys", "keys": [k], "wait": 0.3} for k in keys]
+        if advance:
+            d = act["idx"] - menu["cur_idx"]
+            nav = (["down"] if d > 0 else ["up"]) * abs(d) + ["enter"]
+            keys += nav
+            steps.append({"op": "keys", "keys": nav})
+        approves = any(tick[n]["approves"] and n in want for n in flip)
+        on = [f"{n}. {tick[n]['label']}" for n in flip if n in want]
+        off = [f"{n}. {tick[n]['label']}" for n in flip if n not in want]
+        lines = ([("Ticks", ", ".join(on))] if on else []) + ([("Unticks", ", ".join(off))] if off else []) + \
+                [("Leaves ticked", ", ".join(f"{n}. {tick[n]['label']}" for n in sorted(tick) if n in want and n not in flip) or "nothing else")] + \
+                ([("Then", f"{act['label']} (⏎)")] if advance else [("Then", "stays on the question")]) + \
+                [("By pressing", human_keys(keys))]
     else:
-        raise HerdrError("bad_kind", "kind must be text, keys or choose")
+        raise HerdrError("bad_kind", "kind must be text, keys, choose or multi")
 
     plan = {
         "nonce": secrets.token_urlsafe(18), "host": host["id"], "pane": pane, "kind": kind, "steps": steps,
@@ -425,6 +490,8 @@ def build_plan(body):
     }
     if kind == "choose":
         plan["snap"]["pick"] = [n, opt["label"], menu["current"]]
+    if kind == "multi":
+        plan["snap"]["multi"] = [[o["n"], o["label"], o["checked"]] for o in menu["options"]] + [menu["cur_idx"], menu["action"]["idx"]]
     with LOCK:
         for k in [k for k, p in PLANS.items() if p["expires"] < time.time()]:
             del PLANS[k]
@@ -464,6 +531,11 @@ def commit_plan(nonce):
     if (a["agent_status"], a.get("state_change_seq"), (a.get("agent_session") or {}).get("value")) != \
             (snap["status"], snap["seq"], snap["session"]):
         raise HerdrError("moved_on", "the agent changed state since you looked, so nothing was sent. Read it again.")
+    if plan["kind"] == "multi":
+        menu = parse_menu(read_tail(host, plan["pane"], 80))
+        now = menu and menu.get("multi") and [[o["n"], o["label"], o["checked"]] for o in menu["options"]] + [menu["cur_idx"], menu["action"]["idx"]]
+        if now != snap["multi"]:
+            raise HerdrError("moved_on", "the question on screen is not the one you ticked, so nothing was sent.")
     if plan["kind"] == "choose":
         menu = parse_menu(read_tail(host, plan["pane"], 80))
         n, label, cur = snap["pick"]
@@ -475,6 +547,8 @@ def commit_plan(nonce):
         try:
             run_step(host, plan["pane"], step)
             done.append(step["op"])
+            if step.get("wait"):
+                time.sleep(step["wait"])
         except HerdrError as e:
             audit(plan, False, f"{e.code}: {e.message}")
             raise HerdrError(e.code, f"{e.message}. Sent before the failure: {', '.join(done) or 'nothing'}. "
