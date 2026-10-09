@@ -1,0 +1,389 @@
+/* Shepr stylesheet (nixweb.app template + app rules).
+   Every rule marked WHY exists because of a specific iOS behaviour. Delete at your peril. */
+
+:root{
+  --bg:#070a0f; --panel:#0b1018; --card:#0e1623; --line:#1a2635;
+  --txt:#d3dde8; --dim:#8694a5; --accent:#00f0ff; --ok:#7cff00; --warn:#ffb000; --hot:#ff4d6d;
+  /* WHY: safe-area insets are 0 unless viewport-fit=cover is set in the meta tag. */
+  --top:env(safe-area-inset-top, 0px);
+  --bottom:env(safe-area-inset-bottom, 0px);
+  --left:env(safe-area-inset-left, 0px);
+  --right:env(safe-area-inset-right, 0px);
+  /* Set by app.js from visualViewport so the layout shrinks when the keyboard opens. */
+  --vvh:100%;
+}
+*{box-sizing:border-box;margin:0;padding:0;
+  /* WHY: iOS adds a grey flash box on every tap. Nobody wants it. */
+  -webkit-tap-highlight-color:transparent}
+
+html,body{
+  height:100%;
+  /* WHY: the page must never scroll. If it does, you get rubber-banding over the whole
+     app and the header detaches. Only .scroll, .tail and sheet lists scroll. */
+  overflow:hidden;
+  overscroll-behavior:none;
+  background:var(--bg); color:var(--txt);
+  font:16px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;
+  /* WHY: stops Safari resizing text in landscape. */
+  -webkit-text-size-adjust:100%;
+}
+
+/* WHY: THE single most common reason a web app feels cheap. Without this, every drag
+   starts a text selection and the blue highlight follows your thumb around.
+   Re-enabled on .selectable below, because the pane tail is something you want to copy from. */
+body{-webkit-user-select:none;user-select:none;
+  /* WHY: iOS pops its own callout (copy / share) on a long-press. Long-press is a navigation
+     gesture in this app, so the callout must not compete with it. */
+  -webkit-touch-callout:none}
+.selectable,input,textarea{-webkit-user-select:text;user-select:text;-webkit-touch-callout:default}
+
+/* WHY: removes the 300ms double-tap-to-zoom delay without disabling pinch zoom entirely. */
+button,.tab,a,.item,.chip{touch-action:manipulation}
+button{font:inherit;color:inherit}
+/* WHY: classes below set display:flex, which silently beats the [hidden] attribute and leaves
+   empty strips on screen. This makes hidden mean hidden everywhere. */
+[hidden]{display:none !important}
+
+.app{position:fixed;left:0;right:0;top:var(--vvt,0px);height:var(--vvh);display:flex;flex-direction:column;
+     padding-left:var(--left);padding-right:var(--right)}
+
+.bar{
+  flex:0 0 auto;display:flex;align-items:center;gap:8px;
+  /* WHY: the inset is ADDED to real padding. Using only the inset gives you a cramped
+     header on phones with no notch. */
+  padding:calc(var(--top) + 6px) 12px 6px 16px;
+  background:var(--panel);border-bottom:1px solid var(--line);
+}
+.bar h1{font-size:17px;font-weight:800;color:#fff;letter-spacing:2.2px;text-transform:uppercase;margin-right:auto}
+.mini{width:26px;height:26px;flex:0 0 auto}
+.mini .ring{fill:none;stroke:var(--accent);stroke-width:9;stroke-linejoin:round;stroke-dasharray:470 40;transform-origin:100px 100px}
+.mini .crook{fill:none;stroke:var(--accent);stroke-width:12;stroke-linecap:round}
+.mini.busy .ring{animation:spin 1.6s linear infinite}
+.bar .ghost{background:none;border:0;color:var(--dim);font-size:22px;line-height:1;
+  width:44px;height:44px;border-radius:8px} /* WHY: 44px is Apple's minimum touch target. */
+.bar .ghost:active{background:var(--card);color:#fff}
+.count{font-size:12px;font-weight:700;color:#06121a;background:var(--warn);border-radius:10px;padding:1px 8px}
+.count.none{background:var(--line);color:var(--dim)}
+
+.dot{width:9px;height:9px;border-radius:50%;background:var(--ok);flex:0 0 auto}
+.dot.off{background:var(--warn)}
+
+.banner{flex:0 0 auto;background:#2a1d05;color:var(--warn);
+  padding:7px 16px;font-size:13px;border-bottom:1px solid #4d3d1c}
+.banner b{color:#fff}
+
+/* host chips: tap filter, double-tap clear, hold = only this host */
+.hostbar{flex:0 0 auto;display:flex;flex-wrap:wrap;gap:6px;padding:8px 16px 2px}
+.chip{display:inline-flex;align-items:center;gap:6px;min-height:34px;padding:0 12px;border-radius:17px;
+  background:var(--card);border:1px solid var(--line);color:var(--dim);font-size:13px;font-weight:600}
+.chip.on{border-color:var(--accent);color:var(--accent)}
+.chip.bad{border-color:#5c2a36;color:var(--hot)}
+.chip i{font-style:normal;color:var(--warn)}
+.chip:active,.chip.pressing{background:#14202f}
+
+/* WHY: this is the only scrolling box on the main screen. -webkit-overflow-scrolling gives it
+   native momentum; without it, scrolling inside a fixed layout feels dead on older iOS. */
+.scroll{
+  background-image:linear-gradient(rgba(0,240,255,.035) 1px,transparent 1px),linear-gradient(90deg,rgba(0,240,255,.035) 1px,transparent 1px);
+  background-size:34px 34px;animation:drift 28s linear infinite;
+  flex:1 1 auto;min-height:0;overflow-y:auto;-webkit-overflow-scrolling:touch;
+  overscroll-behavior:contain;
+  padding:8px 16px 12px;
+  display:flex;flex-direction:column;gap:8px;
+}
+.sec{font-size:11.5px;font-weight:700;letter-spacing:1.1px;text-transform:uppercase;color:var(--dim);margin:8px 2px 0}
+.sec b{color:var(--warn)}
+
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px 14px}
+.card h2{font-size:14px;color:#fff;margin-bottom:6px}
+.card p,.card li{font-size:13.5px;color:var(--txt)}
+.card p{margin-bottom:6px}
+.card p:last-child{margin-bottom:0}
+.card ul{margin:0 0 0 18px}
+.dim{color:var(--dim);font-size:13px}
+.empty{text-align:center;padding:30px 12px;color:var(--dim)}
+.empty b{display:block;color:var(--ok);font-size:17px;margin-bottom:4px}
+
+/* session row */
+.item{display:flex;align-items:center;gap:12px;min-height:64px;padding:10px 12px;border-radius:12px;
+  background:var(--card);border:1px solid var(--line);border-left:3px solid var(--line);
+  transition:transform .12s ease,background .12s ease}
+.item.blocked{border-left-color:var(--warn)}
+.item.done{border-left-color:var(--ok)}
+.item:active,.item.pressing{background:#14202f;transform:scale(.985)}
+.item.pressed{background:#10303a;border-color:var(--accent)}
+.item .age{flex:0 0 58px;text-align:center;font-weight:800;font-size:17px;line-height:1.1;color:var(--ok)}
+.item .age small{display:block;font-size:10px;font-weight:600;letter-spacing:.6px;color:var(--dim);margin-top:2px}
+.item .age.warm{color:var(--warn)} .item .age.hot{color:var(--hot)}
+.item .meta{flex:1 1 auto;min-width:0}
+.item .ttl{font-size:15px;font-weight:600;color:#fff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.item .sub{font-size:12.5px;color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.item .chev{color:var(--dim);font-size:22px}
+.sdot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px;background:var(--dim)}
+.sdot.blocked{background:var(--warn)} .sdot.working{background:var(--accent)} .sdot.done{background:var(--ok)}
+.item.compact{min-height:52px}
+.item.enter{animation:rise .5s cubic-bezier(.2,.9,.25,1) both;animation-delay:calc(var(--i,0) * 55ms)}
+.item .age.hot{animation:throb 1.9s ease-in-out infinite}
+.item{position:relative}
+
+/* ---- icon tab bar ---- */
+.tabs{
+  position:relative;flex:0 0 auto;display:flex;background:rgba(8,13,20,.96);border-top:1px solid var(--line);
+  /* WHY: the bottom inset keeps the tab bar clear of the home indicator. Without it the
+     last 34px of your UI is unreachable on a modern iPhone. */
+  padding-bottom:var(--bottom);
+}
+.tab{position:relative;flex:1;min-width:0;display:flex;flex-direction:column;align-items:center;gap:3px;
+  background:none;border:0;color:var(--dim);padding:8px 0 7px;font-size:10.5px;font-weight:700;letter-spacing:.3px}
+.tab svg{width:25px;height:25px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round;
+  transition:transform .25s cubic-bezier(.3,1.6,.5,1),filter .25s}
+.tab.on{color:var(--accent)}
+.tab.on svg{transform:translateY(-1px) scale(1.12);filter:drop-shadow(0 0 6px rgba(0,240,255,.55))}
+.tab.bump svg{animation:bump .42s cubic-bezier(.3,1.6,.5,1)}
+.tab:active,.tab.pressing{background:rgba(255,255,255,.03)}
+.tab .badge{position:absolute;top:3px;left:calc(50% + 6px);min-width:17px;height:17px;padding:0 4px;border-radius:9px;
+  background:var(--hot);color:#fff;font-size:10.5px;line-height:17px;text-align:center;font-weight:800;
+  box-shadow:0 0 0 2px #080d14}
+.tab .badge.pop{animation:pop .4s cubic-bezier(.3,1.8,.5,1)}
+.tab-ind{position:absolute;top:-1px;left:0;height:2px;width:20%;background:var(--accent);
+  box-shadow:0 0 10px var(--accent);transition:transform .32s cubic-bezier(.3,1.2,.4,1)}
+.tab.go svg{stroke:var(--warn)}
+
+/* ---- session view ---- */
+.detail{position:absolute;inset:0;z-index:5;background:var(--bg);display:flex;flex-direction:column;animation:slidein .28s cubic-bezier(.2,.9,.3,1);
+  padding-left:var(--left);padding-right:var(--right)}
+.detail[hidden]{display:none}
+.dbar{padding-left:6px}
+.dbar .ghost{font-size:30px}
+.dtitle{flex:1 1 auto;min-width:0;padding:4px 6px;border-radius:8px}
+.dtitle.pressing{background:var(--card)}
+.dtitle .t1{font-size:15px;font-weight:700;color:#fff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.dtitle .t2{font-size:12px;color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.state{flex:0 0 auto;font-size:11px;font-weight:800;letter-spacing:.8px;padding:3px 9px;border-radius:10px;
+  background:var(--line);color:var(--dim);margin-right:6px}
+.state.blocked{background:#3a2a05;color:var(--warn)} .state.working{background:#06303a;color:var(--accent)}
+.state.done{background:#12320a;color:var(--ok)}
+
+.navrow{flex:0 0 auto;display:flex;align-items:center;gap:4px;padding:2px 10px;background:var(--panel);
+  border-bottom:1px solid var(--line)}
+.navrow .grow{flex:1;text-align:right;padding-right:4px;font-size:12px}
+.nb{background:none;border:0;color:var(--accent);font-size:15px;width:44px;height:40px;border-radius:8px}
+.nb:active,.nb.pressing{background:var(--card)}
+.nb:disabled{color:#2b3a4c}
+.pos{font-size:13px;font-weight:700;color:var(--txt);min-width:46px;text-align:center}
+
+/* The tail wraps (pre-wrap) so prose is readable at phone width; lines of box-drawing are
+   collapsed by app.js. It scrolls in place and the page around it stays still. */
+.tail{flex:1 1 auto;min-height:0;overflow-y:auto;-webkit-overflow-scrolling:touch;overscroll-behavior:contain;
+  padding:10px 14px;margin:0;white-space:pre-wrap;word-break:break-word;
+  font:12px/1.45 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;color:#c4d1de;background:#05080c}
+.tail .sel{color:var(--accent)}
+
+.toast{animation:pop .35s cubic-bezier(.3,1.5,.5,1);flex:0 0 auto;display:flex;align-items:center;gap:10px;padding:8px 14px;font-size:13.5px;
+  background:#0f2a1a;color:var(--ok);border-top:1px solid #1d4a2c}
+.toast.err{background:#2b0f17;color:var(--hot);border-top-color:#5c2a36}
+.toast .grow{flex:1}
+.toast button{background:none;border:1px solid currentColor;border-radius:8px;min-height:36px;padding:0 12px;font-weight:700}
+
+.dock{flex:0 0 auto;background:var(--panel);border-top:1px solid var(--line);
+  padding:6px 10px calc(6px + var(--bottom))}
+.drow{display:flex;gap:6px;margin-bottom:6px}
+.drow button{flex:1 1 0;min-width:0;min-height:44px;border-radius:10px;border:1px solid var(--line);
+  background:var(--card);color:var(--txt);font-weight:700;font-size:15px;white-space:nowrap}
+.drow button:active{background:#14202f}
+.drow.opts button{color:var(--accent)}
+.drow.opts button.cur{border-color:var(--accent)}
+.drow.opts button.appr{color:var(--warn)}
+.compose{display:flex;gap:8px;align-items:flex-end}
+.compose textarea{flex:1 1 auto;min-width:0;resize:none;max-height:92px;min-height:44px;padding:10px 12px;
+  border-radius:12px;border:1px solid var(--line);background:var(--bg);color:#fff;
+  /* WHY: iOS zooms the whole page on focus when an input's font is under 16px, and with the page
+     locked there is no way back out. Keep it at 16. */
+  font:16px/1.3 -apple-system,BlinkMacSystemFont,Helvetica,Arial,sans-serif}
+.compose textarea:focus{outline:none;border-color:var(--accent)}
+.send{flex:0 0 auto;min-height:44px;padding:0 18px;border-radius:12px;border:0;background:var(--accent);
+  color:#04141a;font-weight:800}
+.send:disabled{background:var(--line);color:var(--dim)}
+
+/* ---- sheet: confirm / peek / go to ---- */
+.shade{position:absolute;inset:0;z-index:20;background:rgba(0,0,0,.6);animation:fade .2s ease}
+.sheet{position:absolute;left:0;right:0;bottom:0;z-index:21;animation:sheetup .34s cubic-bezier(.2,1.1,.3,1);max-height:86%;display:flex;flex-direction:column;
+  background:var(--panel);border-top:1px solid var(--accent);border-radius:16px 16px 0 0;
+  padding:14px 16px calc(14px + var(--bottom))}
+.shade[hidden],.sheet[hidden]{display:none}
+.sheet h3{font-size:16px;color:#fff;margin-bottom:2px}
+.sheet .sub{font-size:12.5px;color:var(--dim);margin-bottom:10px}
+.kv{background:var(--bg);border:1px solid var(--line);border-radius:10px;padding:10px 12px;margin-bottom:10px;
+  overflow-y:auto;max-height:34vh}
+.kv .k{font-size:11px;font-weight:700;letter-spacing:.8px;text-transform:uppercase;color:var(--dim)}
+.kv .v{font:13px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace;color:#fff;white-space:pre-wrap;word-break:break-word;margin-bottom:8px}
+.kv .v:last-child{margin-bottom:0}
+.warnbox{background:#3a0f1a;border:1px solid #7a2236;color:#ffd0d8;border-radius:10px;padding:8px 12px;
+  font-size:13px;margin-bottom:10px}
+.btns{display:flex;gap:10px}
+.btns button{flex:1;min-height:50px;border-radius:12px;border:1px solid var(--line);background:var(--card);
+  font-weight:800;font-size:16px}
+.btns .go{background:var(--accent);border-color:var(--accent);color:#04141a}
+.btns .go.appr{background:var(--warn);border-color:var(--warn)}
+.btns .go:disabled{background:var(--line);border-color:var(--line);color:var(--dim)}
+.peek{background:#05080c;border:1px solid var(--line);border-radius:10px;padding:10px;margin-bottom:10px;overflow-y:auto;
+  max-height:40vh;font:11.5px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre-wrap;word-break:break-word;color:#c4d1de}
+.search{width:100%;min-height:44px;padding:0 14px;margin-bottom:8px;border-radius:12px;border:1px solid var(--line);
+  background:var(--bg);color:#fff;font:16px -apple-system,Helvetica,Arial,sans-serif}
+.search:focus{outline:none;border-color:var(--accent)}
+.golist{overflow-y:auto;-webkit-overflow-scrolling:touch;overscroll-behavior:contain;display:flex;flex-direction:column;
+  gap:6px;min-height:120px;flex:1 1 auto}
+
+@media (prefers-color-scheme: light){
+  /* Ships dark on purpose: it is a cockpit, read in the dark as often as not. */
+}
+
+/* ---- empty state: radar ---- */
+.radar{position:relative;width:132px;height:132px;margin:6px auto 14px}
+.radar i{position:absolute;inset:0;border:1.5px solid var(--ok);border-radius:50%;opacity:0;animation:ping 3.2s cubic-bezier(.2,.6,.3,1) infinite}
+.radar i:nth-child(2){animation-delay:1.05s}.radar i:nth-child(3){animation-delay:2.1s}
+.radar b{position:absolute;left:50%;top:50%;width:16px;height:16px;margin:-8px 0 0 -8px;border-radius:50%;background:var(--ok);box-shadow:0 0 18px var(--ok)}
+.radar.scan i{border-color:var(--accent)}.radar.scan b{background:var(--accent);box-shadow:0 0 18px var(--accent)}
+.radar.scan::after{content:'';position:absolute;inset:0;border-radius:50%;
+  background:conic-gradient(from 0deg,rgba(0,240,255,.45),transparent 28%);animation:spin 1.6s linear infinite}
+
+/* ---- hosts / keys ---- */
+.hrow{display:flex;align-items:center;gap:10px;padding:10px 12px;background:var(--card);border:1px solid var(--line);border-radius:12px}
+.hrow .meta{flex:1;min-width:0}
+.hrow .ttl{font-size:15px;font-weight:700;color:#fff}
+.hrow .sub{font-size:12.5px;color:var(--dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pill{flex:0 0 auto;font-size:11px;font-weight:800;letter-spacing:.6px;padding:3px 9px;border-radius:10px;background:var(--line);color:var(--dim);text-transform:uppercase}
+.pill.ok{background:#12320a;color:var(--ok)}.pill.warn{background:#3a2a05;color:var(--warn)}.pill.bad{background:#3a0f1a;color:var(--hot)}
+.mini-btn{flex:0 0 auto;min-height:38px;padding:0 14px;border-radius:10px;border:1px solid var(--accent);background:none;color:var(--accent);font-weight:800;font-size:13.5px}
+.mini-btn:active{background:rgba(0,240,255,.12)}
+.mini-btn.warn{border-color:var(--warn);color:var(--warn)}.mini-btn.bad{border-color:var(--hot);color:var(--hot)}
+.code{font:12px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace;background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:8px 10px;color:#c4d1de;word-break:break-all;margin-top:6px}
+.bigbtn{width:100%;min-height:50px;border-radius:12px;border:1px solid var(--accent);background:rgba(0,240,255,.08);color:var(--accent);font-weight:800;font-size:16px}
+.bigbtn:disabled{opacity:.5}
+
+/* ---- pairing screen ---- */
+.pair{position:absolute;inset:0;z-index:50;background:radial-gradient(120% 80% at 50% 0%,#0d2233 0%,#070d14 55%,#04070b 100%);
+  display:flex;flex-direction:column;align-items:center;gap:12px;text-align:center;
+  padding:calc(var(--top) + 26px) 22px calc(var(--bottom) + 22px)}
+.pair[hidden]{display:none}
+.pgfx{width:min(320px,86%);flex:0 0 auto}
+.pgfx rect,.pgfx path{fill:none;stroke:var(--accent);stroke-width:2.4;stroke-linecap:round;stroke-linejoin:round}
+.pgfx .phost rect,.pgfx .phost path{stroke:var(--ok)}
+.pgfx circle{fill:var(--accent)}.pgfx .phost circle{fill:var(--ok)}
+.pgfx .plink path{stroke:var(--line);stroke-dasharray:3 6}
+.pgfx .pulse{animation:travel 2.4s linear infinite;filter:drop-shadow(0 0 5px var(--accent))}
+.pgfx .p2{animation-delay:.8s}.pgfx .p3{animation-delay:1.6s}
+.pgfx .pphone{animation:float 3.4s ease-in-out infinite}.pgfx .phost{animation:float 3.4s ease-in-out -1.7s infinite}
+.pair h2{font-size:24px;color:#fff;letter-spacing:.3px}
+.psub{color:var(--dim);font-size:14.5px;max-width:330px}
+.pcmd{font:700 17px ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--accent);background:rgba(0,240,255,.07);
+  border:1px dashed rgba(0,240,255,.45);border-radius:12px;padding:11px 22px;margin-top:2px}
+.pcmd.copied{color:var(--ok);border-color:var(--ok)}
+.phint{color:var(--dim);font-size:13px;max-width:300px}
+.pbtns{display:flex;flex-direction:column;gap:10px;width:100%;max-width:340px;margin-top:auto}
+.big{min-height:54px;border-radius:14px;border:0;background:var(--accent);color:#04141a;font-weight:800;font-size:17px;letter-spacing:.3px;
+  box-shadow:0 0 24px rgba(0,240,255,.25)}
+.big:active{transform:scale(.98)}.big:disabled{opacity:.5}
+.alt{min-height:48px;border-radius:14px;border:1px solid var(--line);background:var(--card);color:var(--txt);font-weight:700;font-size:15px;padding:0 18px}
+.pscanner{position:absolute;inset:0;background:#000;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;
+  gap:12px;padding:0 22px calc(var(--bottom) + 22px)}
+.pscanner[hidden]{display:none}
+.pscanner video{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
+.frame{position:absolute;left:50%;top:42%;width:min(68vw,300px);height:min(68vw,300px);transform:translate(-50%,-50%)}
+.frame i{position:absolute;width:34px;height:34px;border:4px solid var(--accent);filter:drop-shadow(0 0 6px var(--accent));animation:breathe 1.8s ease-in-out infinite}
+.frame i:nth-child(1){left:0;top:0;border-right:0;border-bottom:0;border-radius:12px 0 0 0}
+.frame i:nth-child(2){right:0;top:0;border-left:0;border-bottom:0;border-radius:0 12px 0 0}
+.frame i:nth-child(3){left:0;bottom:0;border-right:0;border-top:0;border-radius:0 0 0 12px}
+.frame i:nth-child(4){right:0;bottom:0;border-left:0;border-top:0;border-radius:0 0 12px 0}
+.laser{position:absolute;left:6px;right:6px;top:0;height:3px;border-radius:2px;background:linear-gradient(90deg,transparent,var(--accent),transparent);
+  box-shadow:0 0 14px var(--accent);animation:sweepy 2.2s ease-in-out infinite alternate}
+.pscanmsg{position:relative;color:#fff;background:rgba(0,0,0,.55);padding:8px 14px;border-radius:12px;font-size:14px}
+.pscanner .alt{position:relative}
+.pscanner.hit .frame i{border-color:var(--ok);animation:none;filter:drop-shadow(0 0 10px var(--ok))}
+.pform{display:flex;flex-direction:column;gap:12px;width:100%;max-width:340px;margin-top:auto;text-align:left}
+.pform[hidden]{display:none}
+.pform label{display:flex;flex-direction:column;gap:5px;font-size:11.5px;font-weight:700;letter-spacing:.8px;text-transform:uppercase;color:var(--dim)}
+.pform input{min-height:48px;padding:0 14px;border-radius:12px;border:1px solid var(--line);background:var(--bg);color:#fff;
+  font:600 17px ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:1px;text-transform:none}
+.pform input#pname{font:16px -apple-system,Helvetica,Arial,sans-serif;letter-spacing:0}
+.pform input:focus{outline:none;border-color:var(--accent)}
+.perr{background:#3a0f1a;border:1px solid #7a2236;color:#ffd0d8;border-radius:10px;padding:9px 14px;font-size:13.5px;max-width:340px}
+.perr[hidden],.pdone[hidden]{display:none}
+.pdone{position:absolute;inset:0;z-index:2;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;
+  background:rgba(4,7,11,.94);color:#fff;font-size:20px;font-weight:800;animation:fade .25s ease}
+.pdone svg{width:150px;height:150px;fill:none;stroke:var(--ok);stroke-width:5;stroke-linecap:round;stroke-linejoin:round}
+.pdone .r1,.pdone .r2{transform-origin:60px 60px;opacity:0;animation:burst 1.2s ease-out .15s both}
+.pdone .r2{animation-delay:.45s}
+.pdone .tick{stroke-dasharray:70;stroke-dashoffset:70;animation:draw .5s ease-out .25s forwards;filter:drop-shadow(0 0 8px var(--ok))}
+
+/* ---- splash ---- */
+.splash{position:absolute;inset:0;z-index:100;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:18px;
+  background:radial-gradient(110% 75% at 50% 42%,#0d2233 0%,#070d14 58%,#04070b 100%);
+  transition:opacity .5s ease,transform .5s cubic-bezier(.5,0,.8,.4)}
+.splash.out{opacity:0;transform:scale(1.12);pointer-events:none}
+.splash .sweep{position:absolute;left:50%;top:41%;width:150vmax;height:150vmax;margin:-75vmax 0 0 -75vmax;border-radius:50%;
+  background:conic-gradient(from 0deg,rgba(0,240,255,.16),transparent 18%);animation:spin 3.6s linear infinite;opacity:.9;
+  -webkit-mask-image:radial-gradient(circle,#000 0,transparent 26%);mask-image:radial-gradient(circle,#000 0,transparent 26%)}
+.smark{position:relative;width:min(52vw,230px);height:min(52vw,230px);overflow:visible;filter:drop-shadow(0 0 18px rgba(0,240,255,.35))}
+.sring{fill:none;stroke:var(--accent);stroke-width:7;stroke-linejoin:round;stroke-linecap:round;stroke-dasharray:480;stroke-dashoffset:480;
+  animation:draw .95s cubic-bezier(.4,.1,.2,1) .1s forwards}
+.scrook{fill:none;stroke:var(--accent);stroke-width:10;stroke-linecap:round;stroke-dasharray:190;stroke-dashoffset:190;
+  animation:draw .7s cubic-bezier(.4,.1,.2,1) .75s forwards}
+.sd{fill:var(--warn);opacity:0;transform-box:fill-box;transform-origin:center;animation:gather .8s cubic-bezier(.3,1.5,.5,1) both}
+.sd.g{fill:var(--ok)}
+.d1{--dx:-90px;--dy:-60px;animation-delay:1.0s}.d2{--dx:70px;--dy:80px;animation-delay:1.08s}.d3{--dx:-70px;--dy:50px;animation-delay:1.16s}
+.d4{--dx:100px;--dy:-70px;animation-delay:1.24s}.d5{--dx:30px;--dy:110px;animation-delay:1.32s}
+.sword{position:relative;display:flex;gap:.34em;font-size:34px;font-weight:800;color:#fff;letter-spacing:.1em}
+.sword span{opacity:0;transform:translateY(14px);filter:blur(6px);animation:letter .6s cubic-bezier(.2,.9,.3,1) forwards}
+.sword span:nth-child(1){animation-delay:1.35s}.sword span:nth-child(2){animation-delay:1.43s}.sword span:nth-child(3){animation-delay:1.51s}
+.sword span:nth-child(4){animation-delay:1.59s}.sword span:nth-child(5){animation-delay:1.67s}
+.stag{position:relative;font-size:13px;letter-spacing:.34em;text-transform:uppercase;color:var(--dim);opacity:0;animation:fade .6s ease 1.9s forwards}
+
+/* ---- keyframes ---- */
+@keyframes spin{to{transform:rotate(360deg)}}
+@keyframes draw{to{stroke-dashoffset:0}}
+@keyframes gather{from{opacity:0;transform:translate(var(--dx),var(--dy)) scale(.2)}60%{opacity:1}to{opacity:1;transform:none}}
+@keyframes letter{to{opacity:1;transform:none;filter:none}}
+@keyframes fade{from{opacity:0}to{opacity:1}}
+@keyframes rise{from{opacity:0;transform:translateY(16px) scale(.97)}to{opacity:1;transform:none}}
+@keyframes slidein{from{transform:translateX(100%)}to{transform:none}}
+@keyframes sheetup{from{transform:translateY(100%)}to{transform:none}}
+@keyframes pop{from{opacity:0;transform:scale(.7)}to{opacity:1;transform:none}}
+@keyframes bump{0%{transform:scale(1)}40%{transform:translateY(-5px) scale(1.3)}100%{transform:translateY(-1px) scale(1.12)}}
+@keyframes throb{0%,100%{text-shadow:0 0 0 rgba(255,77,109,0)}50%{text-shadow:0 0 14px rgba(255,77,109,.85)}}
+@keyframes drift{to{background-position:34px 34px}}
+@keyframes ping{0%{transform:scale(.25);opacity:.8}100%{transform:scale(1);opacity:0}}
+@keyframes travel{0%{cx:96;opacity:0}12%{opacity:1}88%{opacity:1}100%{cx:224;opacity:0}}
+@keyframes float{0%,100%{transform:translateY(0)}50%{transform:translateY(-4px)}}
+@keyframes breathe{0%,100%{opacity:1}50%{opacity:.55}}
+@keyframes sweepy{from{top:4px}to{top:calc(100% - 7px)}}
+@keyframes burst{0%{opacity:.9;transform:scale(.6)}100%{opacity:0;transform:scale(2.3)}}
+
+/* WHY: people who ask the OS for less motion get none. Everything above is decoration. */
+@media (prefers-reduced-motion: reduce){
+  *,*::before,*::after{animation-duration:.001ms !important;animation-delay:0s !important;animation-iteration-count:1 !important;transition-duration:.001ms !important}
+}
+
+/* ---- floating toast (used outside the session view) ---- */
+.gtoast{position:absolute;left:12px;right:12px;bottom:calc(66px + var(--bottom));z-index:30;border-radius:12px;border:1px solid #1d4a2c}
+.gtoast.err{border-color:#5c2a36}
+
+/* ---- splash, second launch within 20 minutes: same picture, no waiting ---- */
+.splash.quick *{animation-delay:0s !important;animation-duration:.4s !important}
+.splash.quick .sweep{animation-duration:3.6s !important}
+
+/* ---- compact hosts + keys (Law 17: everything on one screen, lists scroll in their own box) ---- */
+.hscan{display:flex;align-items:center;gap:14px}
+.hscan .side{flex:1;min-width:0}
+.hscan .bigbtn{min-height:44px;font-size:15px;margin-top:6px}
+.radar.sm{width:84px;height:84px;margin:0;flex:0 0 auto}
+.radar.sm b{width:12px;height:12px;margin:-6px 0 0 -6px}
+.devbox{display:flex;flex-direction:column;gap:8px;max-height:26vh;overflow-y:auto;-webkit-overflow-scrolling:touch;overscroll-behavior:contain}
+.fine{font-size:12px;text-align:center;margin-top:2px}
+.btns button.bad{color:var(--hot);border-color:#5c2a36}
+
+.devbox>.hrow{flex:0 0 auto}
+.devbox{max-height:30vh}
+
+/* WHY: a sheet's content must be a flex child that can shrink, or a tall list pushes its own buttons off the bottom of the screen. */
+.sheet>div{display:flex;flex-direction:column;flex:1 1 auto;min-height:0}

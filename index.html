@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<!-- viewport-fit=cover is what lets us reach under the notch; without it the safe-area
+     insets below are always zero and the layout looks fine on a simulator and wrong on a phone. -->
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<title>Shepr</title>
+<meta name="description" content="Shepr: herd your agents from your phone. See which sessions are waiting on you, read, answer, confirm first.">
+
+<!-- Apple-specific. The manifest alone is not enough on iOS. -->
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Shepr">
+<meta name="theme-color" content="#070d14">
+<link rel="icon" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/icon-180.png">
+<!-- WHY: iOS paints this while the app boots. Without a matching image it flashes white first,
+     and the animated splash below would start after an ugly blink. One per device size. -->
+<link rel="apple-touch-startup-image" href="icons/launch/1290x2796.png" media="(device-width: 430px) and (device-height: 932px) and (-webkit-device-pixel-ratio: 3) and (orientation: portrait)">
+<link rel="apple-touch-startup-image" href="icons/launch/1179x2556.png" media="(device-width: 393px) and (device-height: 852px) and (-webkit-device-pixel-ratio: 3) and (orientation: portrait)">
+<link rel="apple-touch-startup-image" href="icons/launch/1170x2532.png" media="(device-width: 390px) and (device-height: 844px) and (-webkit-device-pixel-ratio: 3) and (orientation: portrait)">
+<link rel="apple-touch-startup-image" href="icons/launch/1284x2778.png" media="(device-width: 428px) and (device-height: 926px) and (-webkit-device-pixel-ratio: 3) and (orientation: portrait)">
+<link rel="apple-touch-startup-image" href="icons/launch/1125x2436.png" media="(device-width: 375px) and (device-height: 812px) and (-webkit-device-pixel-ratio: 3) and (orientation: portrait)">
+<link rel="apple-touch-startup-image" href="icons/launch/1242x2688.png" media="(device-width: 414px) and (device-height: 896px) and (-webkit-device-pixel-ratio: 3) and (orientation: portrait)">
+<link rel="apple-touch-startup-image" href="icons/launch/828x1792.png" media="(device-width: 414px) and (device-height: 896px) and (-webkit-device-pixel-ratio: 2) and (orientation: portrait)">
+<link rel="apple-touch-startup-image" href="icons/launch/1080x2340.png" media="(device-width: 360px) and (device-height: 780px) and (-webkit-device-pixel-ratio: 3) and (orientation: portrait)">
+<link rel="apple-touch-startup-image" href="icons/launch/750x1334.png" media="(device-width: 375px) and (device-height: 667px) and (-webkit-device-pixel-ratio: 2) and (orientation: portrait)">
+<link rel="apple-touch-startup-image" href="icons/launch/1242x2208.png" media="(device-width: 414px) and (device-height: 736px) and (-webkit-device-pixel-ratio: 3) and (orientation: portrait)">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+
+<div class="app" id="app">
+  <header class="bar">
+    <svg class="mini" id="mini" viewBox="0 0 200 200" aria-hidden="true">
+      <polygon class="ring" points="100,14 174.7,57 174.7,143 100,186 25.3,143 25.3,57"/>
+      <path class="crook" d="M121 158 L121 76 C121 42 80 40 75 68"/>
+      <circle cx="58" cy="132" r="9" fill="#ffb000"/><circle cx="84" cy="150" r="7" fill="#ffb000"/>
+      <circle cx="46" cy="104" r="6.5" fill="#7cff00"/>
+    </svg>
+    <h1>Shepr</h1>
+    <span class="dot" id="net" title="connection"></span>
+    <span class="count" id="count" hidden></span>
+    <button class="ghost" id="refresh" aria-label="Refresh">&#8635;</button>
+  </header>
+
+  <!-- OFFLINE BANNER: shown by app.js when the tailnet or host is unreachable. -->
+  <div class="banner" id="offline" hidden></div>
+
+  <div class="hostbar" id="hostbar" hidden></div>
+
+  <!-- The ONLY scrolling element on the main screen. The page itself never scrolls (Law 17). -->
+  <main class="scroll" id="main"></main>
+
+  <!-- Icon tabs, built by app.js. Tap switches, double-tap refreshes, hold opens Go To. -->
+  <nav class="tabs" id="tabs"></nav>
+
+  <!-- A session. Same page, no navigation: a link out of scope would kick the app into Safari. -->
+  <section class="detail" id="detail" hidden>
+    <header class="bar dbar">
+      <button class="ghost" id="dback" aria-label="Back">&#8249;</button>
+      <div class="dtitle" id="dhead" title="tap: go to, double-tap: next waiting, hold: previous">
+        <div class="t1" id="dtitle"></div>
+        <div class="t2" id="dsub"></div>
+      </div>
+      <span class="state" id="dstate"></span>
+    </header>
+
+    <div class="navrow">
+      <button class="nb" id="dprev" aria-label="Previous session">&#9664;</button>
+      <span class="pos" id="dpos"></span>
+      <button class="nb" id="dnext" aria-label="Next session">&#9654;</button>
+      <span class="dim grow" id="dtime"></span>
+      <button class="nb" id="drefresh" aria-label="Reload the tail">&#8635;</button>
+    </div>
+
+    <!-- Terminal text is DATA: app.js sets textContent, never innerHTML. -->
+    <pre class="tail selectable" id="tail" tabindex="0"></pre>
+
+    <div class="toast" id="toast" hidden></div>
+
+    <div class="dock" id="dock">
+      <div class="drow stage" id="stage" hidden></div>
+      <div class="drow opts" id="optrow" hidden></div>
+      <div class="drow keys" id="keyrow" hidden></div>
+      <form class="compose" id="compose" autocomplete="off">
+        <textarea id="msg" rows="1" maxlength="4000" placeholder="Type an answer or a prompt" enterkeyhint="send"></textarea>
+        <button type="submit" class="send" id="send">Send</button>
+      </form>
+    </div>
+  </section>
+
+  <!-- One bottom sheet, filled by app.js: confirm a send, peek at a session, or Go To. -->
+  <div class="shade" id="shade" hidden></div>
+  <div class="sheet" id="sheet" hidden role="dialog" aria-modal="true"></div>
+
+  <!-- Pairing: shown until this phone holds a key the host trusts. -->
+  <section class="pair" id="pair" hidden>
+    <svg class="pgfx" viewBox="0 0 320 120" aria-hidden="true">
+      <g class="plink"><path d="M92 60 H228"/><circle class="pulse p1" r="4" cy="60"/><circle class="pulse p2" r="4" cy="60"/><circle class="pulse p3" r="4" cy="60"/></g>
+      <g class="pphone"><rect x="52" y="26" width="40" height="68" rx="9"/><path d="M64 34h16"/><circle cx="72" cy="84" r="3"/></g>
+      <g class="phost"><rect x="228" y="30" width="44" height="26" rx="6"/><rect x="228" y="64" width="44" height="26" rx="6"/><circle cx="238" cy="43" r="2.5"/><circle cx="238" cy="77" r="2.5"/><path d="M248 43h16M248 77h16"/></g>
+    </svg>
+    <h2 id="ptitle">Pair this phone</h2>
+    <p class="psub" id="psub">Shepr trusts a phone only after it proves it holds a key this host knows.</p>
+
+    <div class="pcmd" id="pcmd" role="button" tabindex="0" title="tap to copy">shepr pair</div>
+    <p class="phint">Run that on the host. It shows a QR code. Scan it here.</p>
+
+    <div class="pbtns" id="pbtns">
+      <button class="big" id="pscan" type="button">Scan QR</button>
+      <button class="alt" id="pcode" type="button">Type the code</button>
+    </div>
+
+    <div class="pscanner" id="pscanner" hidden>
+      <video id="pvideo" playsinline muted></video>
+      <div class="frame"><i></i><i></i><i></i><i></i><b class="laser"></b></div>
+      <div class="pscanmsg" id="pscanmsg">Point at the QR on your host</div>
+      <button class="alt" id="pstop" type="button">Cancel</button>
+    </div>
+
+    <form class="pform" id="pform" hidden autocomplete="off">
+      <label>Code<input id="pcodein" inputmode="text" autocapitalize="characters" autocomplete="off" spellcheck="false" maxlength="14" placeholder="XXXX-XXXX-XXXX"></label>
+      <label>Name this phone<input id="pname" autocomplete="off" maxlength="40" placeholder="Fred's iPhone"></label>
+      <button class="big" type="submit" id="pgo">Pair</button>
+    </form>
+
+    <div class="perr" id="perr" hidden></div>
+    <div class="pdone" id="pdone" hidden>
+      <svg viewBox="0 0 120 120" aria-hidden="true"><circle class="r1" cx="60" cy="60" r="38"/><circle class="r2" cx="60" cy="60" r="38"/><path class="tick" d="M42 62 l13 13 l25 -29"/></svg>
+      <div id="pdonemsg">Paired</div>
+    </div>
+  </section>
+
+  <!-- Splash: the logo draws itself, the agents gather into the pen, the name arrives. Tap to skip. -->
+  <div class="splash" id="splash" aria-hidden="true">
+    <div class="sweep"></div>
+    <svg class="smark" viewBox="0 0 200 200">
+      <polygon class="sring" points="100,14 174.7,57 174.7,143 100,186 25.3,143 25.3,57"/>
+      <path class="scrook" d="M121 158 L121 76 C121 42 80 40 75 68"/>
+      <circle class="sd d1" cx="58" cy="132" r="8"/>
+      <circle class="sd d2" cx="82" cy="150" r="6.2"/>
+      <circle class="sd d3" cx="47" cy="106" r="5.6"/>
+      <circle class="sd d4 g" cx="72" cy="112" r="5"/>
+      <circle class="sd d5" cx="92" cy="130" r="4.4"/>
+    </svg>
+    <div class="sword"><span>S</span><span>H</span><span>E</span><span>P</span><span>R</span></div>
+    <div class="stag">herd your agents</div>
+  </div>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>

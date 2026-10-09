@@ -1,0 +1,222 @@
+// Shepr end-to-end test: iPhone-sized Chromium against a server running on the ISOLATED hrtest herdr session.
+//   tests/fake-session.sh up ; eval "$(tests/fake-session.sh env)"; SHEPR_URL=http://localhost:8743 python3 server.py 8743 &
+//   node tests/ui.mjs
+import { createRequire } from 'module';
+import { execFileSync } from 'child_process';
+import fs from 'fs';
+const require = createRequire(process.env.PW_PATH || '/home/pi/.local/share/mise/installs/npm-playwright/latest/node_modules/');
+const { chromium, devices } = require('playwright');
+
+const OUT = '/tmp/claude-1000/shots'; fs.mkdirSync(OUT, { recursive: true });
+const BASE = 'http://localhost:8743';
+const SERVER = new URL('../server.py', import.meta.url).pathname;
+const ENV = { ...process.env, SHEPR_STATE: process.env.SHEPR_STATE || '/tmp/claude-1000/shepr-state', SHEPR_URL: BASE,
+              HERDR_SOCKET_PATH: process.env.HERDR_SOCKET_PATH || '/home/pi/.config/herdr/sessions/hrtest/herdr.sock' };
+const cli = (...a) => execFileSync('python3', [SERVER, ...a], { env: ENV, encoding: 'utf8' });
+const newCode = (png) => JSON.parse(cli('pair', '--no-wait', '--json', ...(png ? ['--png', png] : '')));
+
+const ok = [];
+const check = (name, cond) => { ok.push([name, !!cond]); console.log((cond ? 'PASS ' : 'FAIL ') + name); };
+const errs = [];
+
+// pointer helpers: dispatch the sequences a finger produces
+async function hold(page, sel, ms) {
+  await page.evaluate(({ sel, ms }) => new Promise((res) => {
+    const n = document.querySelector(sel); const r = n.getBoundingClientRect();
+    const o = { bubbles: true, clientX: r.x + r.width / 2, clientY: r.y + r.height / 2, pointerId: 1, pointerType: 'touch', isPrimary: true, button: 0 };
+    n.dispatchEvent(new PointerEvent('pointerdown', o));
+    setTimeout(() => { n.dispatchEvent(new PointerEvent('pointerup', o)); res(); }, ms);
+  }), { sel, ms });
+}
+async function tap(page, sel, n = 1, gap = 90) {
+  await page.evaluate(({ sel, n, gap }) => new Promise((res) => {
+    const node = document.querySelector(sel); const r = node.getBoundingClientRect();
+    const o = { bubbles: true, clientX: r.x + r.width / 2, clientY: r.y + r.height / 2, pointerId: 1, pointerType: 'touch', isPrimary: true, button: 0 };
+    let i = 0; const go = () => {
+      node.dispatchEvent(new PointerEvent('pointerdown', o)); node.dispatchEvent(new PointerEvent('pointerup', o));
+      if (++i < n) setTimeout(go, gap); else res();
+    }; go();
+  }), { sel, n, gap });
+}
+const watch = (page) => {
+  page.on('pageerror', (e) => errs.push('pageerror: ' + e.message));
+  page.on('console', (m) => { if (m.type() === 'error' && !/401|403|409|410|429|502/.test(m.text())) errs.push('console: ' + m.text()); });
+};
+
+const dev = devices['iPhone 14'];
+const browser = await chromium.launch({ executablePath: '/usr/bin/chromium', args: ['--no-sandbox'] });
+
+// =============================================================== 1. splash + first run (unpaired)
+{
+  const ctx = await browser.newContext({ ...dev, serviceWorkers: 'block' });
+  const page = await ctx.newPage(); watch(page);
+  await page.goto(BASE + '/');
+  await page.waitForSelector('#splash');
+  check('splash shows the wordmark', (await page.textContent('.sword')).replace(/\s/g, '') === 'SHEPR');
+  await page.waitForTimeout(400);  await page.screenshot({ path: `${OUT}/s1-splash-early.png` });
+  await page.screenshot({ path: `${OUT}/s2-splash-mid.png` });
+  await page.waitForSelector('#splash', { state: 'detached', timeout: 6000 });
+  check('splash removes itself', true);
+  check('unpaired phone lands on the pairing screen', await page.isVisible('#pair'));
+  check('no API data is shown while unpaired', (await page.$$('.item')).length === 0);
+  await page.screenshot({ path: `${OUT}/p1-pair.png` });
+
+  // ---- pair by typing the code
+  const { code } = newCode();
+  await page.click('#pcode');
+  await page.fill('#pcodein', code.toLowerCase().replace(/-/g, ''));
+  check('code field formats as XXXX-XXXX-XXXX', (await page.inputValue('#pcodein')) === code);
+  await page.fill('#pname', 'Test iPhone');
+  await page.screenshot({ path: `${OUT}/p2-form.png` });
+  await page.click('#pgo');
+  await page.waitForSelector('#pdone:not([hidden])');
+  await page.waitForTimeout(500);
+  await page.screenshot({ path: `${OUT}/p3-success.png` });
+  await page.waitForSelector('.item', { timeout: 8000 });
+  check('pairing succeeds and the queue loads with signed requests', (await page.$$('.item')).length >= 3);
+  check('private key is stored non-extractable', await page.evaluate(async () => { const d = window.shepr.S.dev; return d.key.extractable === false && d.key.type === 'private'; }));
+  const devJson = JSON.parse(fs.readFileSync(ENV.SHEPR_STATE + '/devices.json', 'utf8'));
+  const myId = await page.evaluate(() => window.shepr.S.dev.id);
+  check('host recorded this phone as a public key only (no private part)', !!devJson[myId] && !('d' in devJson[myId]) && Object.values(devJson).every((d) => !('d' in d)));
+  const reuse = await page.evaluate(async (code) => {
+    const kp = await crypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, true, ['sign']);
+    const j = await crypto.subtle.exportKey('jwk', kp.publicKey);
+    const r = await fetch('api/pair', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Shepr': '1' },
+      body: JSON.stringify({ code, jwk: { kty: j.kty, crv: j.crv, x: j.x, y: j.y }, name: 'attacker' }) });
+    return r.status;
+  }, code);
+  check('a used pairing code cannot be used again', reuse === 403);
+
+  // ---- attacks against the signature scheme
+  const r = await page.evaluate(async () => {
+    const S = window.shepr, out = {};
+    const h = await S.signHeaders('GET', 'api/queue', '');
+    out.first = (await fetch('api/queue', { headers: h })).status;
+    out.replay = (await fetch('api/queue', { headers: h })).status;
+    const h2 = await S.signHeaders('GET', 'api/queue', '');
+    out.otherPath = (await fetch('api/pane?host=gus&pane=w1:p1', { headers: h2 })).status;   // signed for another path
+    const h3 = await S.signHeaders('POST', 'api/hosts/scan', '{}');
+    out.methodSwap = (await fetch('api/hosts', { headers: h3 })).status;
+    out.noSig = (await fetch('api/queue')).status;
+    const h4 = { ...(await S.signHeaders('GET', 'api/queue', '')), 'X-Shepr-Ts': String(Date.now() - 10 * 60 * 1000) };
+    out.stale = (await fetch('api/queue', { headers: h4 })).status;
+    return out;
+  });
+  console.log('   attacks:', JSON.stringify(r));
+  check('valid signature accepted once', r.first === 200);
+  check('replayed request refused', r.replay === 401);
+  check('signature bound to the path', r.otherPath === 401);
+  check('signature bound to the method', r.methodSwap === 401);
+  check('unsigned request refused', r.noSig === 401);
+  check('old timestamp refused', r.stale === 401);
+
+  // ---- main screen
+  await page.waitForTimeout(600);
+  await page.screenshot({ path: `${OUT}/q1-queue.png` });
+  const ages = await page.$$eval('.item .age', (n) => n.map((x) => x.textContent));
+  check('queue shows blocked rows', ages.length >= 3);
+  check('page does not scroll (Law 17)', await page.evaluate(() => document.documentElement.scrollHeight <= innerHeight + 1));
+
+  // ---- icon tab bar
+  const tabs = await page.$$eval('.tab', (n) => n.map((x) => [x.dataset.view, !!x.querySelector('svg'), x.textContent.trim()]));
+  console.log('   tabs:', JSON.stringify(tabs));
+  check('five icon tabs with labels', tabs.length === 5 && tabs.every((t) => t[1]));
+  const x0 = await page.$eval('#tabind', (n) => getComputedStyle(n).transform);
+  await tap(page, '.tab[data-view=all]'); await page.waitForTimeout(500);
+  const x1 = await page.$eval('#tabind', (n) => getComputedStyle(n).transform);
+  check('tab indicator slides', x0 !== x1);
+  await page.screenshot({ path: `${OUT}/t1-herd.png` });
+  await tap(page, '.tab[data-view=go]'); await page.waitForSelector('#sheet:not([hidden]) .search');
+  check('Go tab opens Go To', true);
+  await page.waitForTimeout(600);   // let the sheet finish sliding up before measuring it
+  check('Go To sheet keeps its Close button on screen', await page.evaluate(() => { const b = document.querySelector('#sheet .btns button'); return b && b.getBoundingClientRect().bottom <= innerHeight; }));
+  await page.screenshot({ path: `${OUT}/t2-goto.png` });
+  await page.evaluate(() => document.getElementById('shade').click());
+  await tap(page, '.tab[data-view=waiting]'); await page.waitForTimeout(300);
+
+  // ---- gestures still work
+  await hold(page, '.item:nth-of-type(2)', 650);
+  await page.waitForSelector('#sheet:not([hidden]) .peek'); await page.waitForTimeout(400);
+  check('long-press row opens peek', (await page.textContent('.peek')).length > 10);
+  await page.click('#sheet .btns button:first-child');
+  await tap(page, '.item:nth-of-type(2)');
+  await page.waitForSelector('#detail:not([hidden])');
+  await page.waitForFunction(() => document.querySelector('#tail').textContent.length > 20);
+  await page.waitForTimeout(500);
+  await page.screenshot({ path: `${OUT}/d1-detail.png` });
+  check('detail shows option buttons', (await page.$$('#optrow button')).length >= 3);
+  const before = await page.textContent('#dsub');
+  await tap(page, '#dhead', 2, 80); await page.waitForTimeout(900);
+  check('double-tap title jumps to next waiting', before !== (await page.textContent('#dsub')));
+  await hold(page, '#dhead', 650); await page.waitForTimeout(900);
+  check('hold title flips back', (await page.textContent('#dsub')) === before);
+
+  // ---- confirm sheet; nothing sent until Send
+  await page.click('#optrow button:nth-child(2)');
+  await page.waitForSelector('#sheet:not([hidden]) .kv');
+  await page.screenshot({ path: `${OUT}/d2-confirm.png` });
+  check('Send disabled at first (ghost-tap guard)', await page.locator('#sheet .btns .go').isDisabled());
+  await page.click('#sheet .btns button:first-child');
+  await page.click('#dback');
+
+  // ---- hosts + keys
+  await tap(page, '.tab[data-view=hosts]'); await page.waitForTimeout(900);
+  await page.screenshot({ path: `${OUT}/h1-hosts.png` });
+  check('Hosts view lists the local host and vic (disabled)', (await page.textContent('#main')).includes('vic'));
+  await tap(page, '.tab[data-view=keys]'); await page.waitForTimeout(900);
+  await page.screenshot({ path: `${OUT}/k1-keys.png` });
+  check('Keys view shows the device fingerprint', (await page.textContent('#main')).includes('SHA256:'));
+
+  // ---- revocation signs the phone out
+  cli('revoke', myId);
+  await page.evaluate(() => window.shepr.S.q && fetch('api/queue').catch(() => 0));
+  await page.evaluate(async () => { try { await window.fetch('api/queue', { headers: await window.shepr.signHeaders('GET', 'api/queue', '') }); } catch (e) {} });
+  await tap(page, '#refresh').catch(() => {}); await page.click('#refresh');
+  await page.waitForSelector('#pair:not([hidden])', { timeout: 6000 });
+  check('revoked phone is thrown back to the pairing screen', true);
+  const rv = await page.evaluate(async () => (await fetch('api/queue', { headers: await window.shepr.signHeaders('GET', 'api/queue', '') })).status);
+  check('revoked key is refused by the host', rv === 401);
+  await ctx.close();
+}
+
+// =============================================================== 2. pair by SCANNING (fake camera -> jsQR)
+{
+  const { url } = newCode('/tmp/claude-1000/qr-live.png');
+  execFileSync('ffmpeg', ['-y', '-loglevel', 'error', '-loop', '1', '-i', '/tmp/claude-1000/qr-live.png', '-t', '3', '-r', '15',
+    '-vf', 'scale=640:480:force_original_aspect_ratio=decrease,pad=640:480:(ow-iw)/2:(oh-ih)/2:white', '-pix_fmt', 'yuv420p', '/tmp/claude-1000/qr-live.y4m']);
+  const b2 = await chromium.launch({ executablePath: '/usr/bin/chromium', args: ['--no-sandbox', '--use-fake-ui-for-media-stream',
+    '--use-fake-device-for-media-stream', '--use-file-for-fake-video-capture=/tmp/claude-1000/qr-live.y4m'] });
+  const ctx = await b2.newContext({ ...dev, serviceWorkers: 'block', permissions: ['camera'] });
+  const page = await ctx.newPage(); watch(page);
+  await page.goto(BASE + '/');
+  await page.waitForSelector('#pair:not([hidden])', { timeout: 8000 });
+  await page.click('#pscan');
+  await page.waitForSelector('#pscanner:not([hidden])');
+  await page.waitForTimeout(700); await page.screenshot({ path: `${OUT}/sc1-scanner.png` });
+  await page.waitForSelector('#pform:not([hidden])', { timeout: 12000 });
+  const filled = await page.inputValue('#pcodein');
+  check('scanner decoded the QR and filled the code', url.endsWith(filled));
+  await page.screenshot({ path: `${OUT}/sc2-scanned.png` });
+  await page.click('#pgo');
+  await page.waitForSelector('.item', { timeout: 10000 });
+  check('paired by scanning, queue loaded', true);
+  await ctx.close(); await b2.close();
+}
+
+// =============================================================== 3. wrong code is refused
+{
+  const ctx = await browser.newContext({ ...dev, serviceWorkers: 'block' });
+  const page = await ctx.newPage(); watch(page);
+  await page.goto(BASE + '/'); await page.waitForSelector('#pair:not([hidden])', { timeout: 8000 });
+  await page.click('#pcode'); await page.fill('#pcodein', 'ZZZZZZZZZZZZ'); await page.click('#pgo');
+  await page.waitForSelector('#perr:not([hidden])');
+  check('wrong code is refused with a clear message', /wrong|expired|used/i.test(await page.textContent('#perr')));
+  await ctx.close();
+}
+
+await browser.close();
+check('no page errors', errs.length === 0);
+if (errs.length) console.log(errs.join('\n'));
+const failed = ok.filter((x) => !x[1]);
+console.log(failed.length ? `\n${failed.length} FAILED` : '\nALL PASSED');
+process.exit(failed.length ? 1 : 0);
