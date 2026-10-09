@@ -40,7 +40,7 @@ async function tap(page, sel, n = 1, gap = 90) {
 }
 const watch = (page) => {
   page.on('pageerror', (e) => errs.push('pageerror: ' + e.message));
-  page.on('console', (m) => { if (m.type() === 'error' && !/401|403|409|410|429|502/.test(m.text())) errs.push('console: ' + m.text()); });
+  page.on('console', (m) => { if (m.type() === 'error' && !/400|401|403|409|410|429|502/.test(m.text())) errs.push('console: ' + m.text()); });
 };
 
 const dev = devices['iPhone 14'];
@@ -116,6 +116,55 @@ const browser = await chromium.launch({ executablePath: '/usr/bin/chromium', arg
   const ages = await page.$$eval('.item .age', (n) => n.map((x) => x.textContent));
   check('queue shows blocked rows', ages.length >= 3);
   check('page does not scroll (Law 17)', await page.evaluate(() => document.documentElement.scrollHeight <= innerHeight + 1));
+
+  // ---- queue order: needs you, then sleeping, then working
+  const secs = await page.$$eval('#main .sec', (n) => n.map((x) => x.textContent.trim().split(' ')[0]));
+  console.log('   sections:', secs.join(' > '));
+  check('queue order: Needs you before Sleeping before Working', secs.indexOf('Needs') === 0 && secs.indexOf('Sleeping') > secs.indexOf('Needs') && (secs.indexOf('Working') === -1 || secs.indexOf('Working') > secs.indexOf('Sleeping')));
+  const statuses = await page.$$eval('#main .item', (n) => n.map((x) => x.classList.contains('blocked') ? 'b' : x.classList.contains('working') ? 'w' : 'i').join(''));
+  check('rows are ordered blocked, then sleeping, then working', /^b+i*w*$/.test(statuses));
+
+  // ---- wake sleeping sessions: confirm first, never a blocked one
+  const blockedPane = await page.evaluate(() => window.shepr.S.q.agents.find((a) => a.status === 'blocked'));
+  const refuse = await page.evaluate(async (a) => {
+    const body = JSON.stringify({ kind: 'wake', targets: [{ host: a.host, pane: a.pane }], text: 'go' });
+    const h = await window.shepr.signHeaders('POST', 'api/send/prepare', body);
+    const r = await fetch('api/send/prepare', { method: 'POST', headers: { ...h, 'Content-Type': 'application/json', 'X-Shepr': '1' }, body });
+    return [r.status, (await r.json()).error];
+  }, blockedPane);
+  check('wake refuses a BLOCKED session (cannot approve anything)', refuse[0] === 400 && refuse[1] === 'not_sleeping');
+  await page.click('#main .secrow .mini-btn');
+  await page.waitForSelector('#sheet:not([hidden]) .chk');
+  await page.waitForTimeout(500);
+  await page.screenshot({ path: `${OUT}/w1-wake.png` });
+  check('wake sheet lists the sleeping sessions, all ticked', (await page.$$eval('#sheet .chk input', (n) => n.length && n.every((x) => x.checked))));
+  await page.fill('#sheet .wakemsg', 'Pick this back up');
+  await page.click('#sheet .btns .go');
+  await page.waitForSelector('#sheet .kv');
+  const prev = await page.textContent('#sheet .kv');
+  await page.screenshot({ path: `${OUT}/w2-wake-confirm.png` });
+  check('preview names every target and the exact message', prev.includes('Wakes') && prev.includes('Pick this back up'));
+  check('wake preview says nothing is approved', prev.includes('Nothing is approved'));
+  await page.waitForTimeout(900);
+  await page.click('#sheet .btns .go');                      // Wake them
+  await page.waitForSelector('#gtoast:not([hidden])', { timeout: 15000 });
+  const wres = await page.textContent('#gtoast');
+  console.log('   wake result:', wres.slice(0, 160));
+  check('wake reports honestly (the fake agent refuses a prompt, and it says so)', /failed|Woke/.test(wres));
+
+  // ---- session text is big and adjustable
+  await tap(page, '.item:nth-of-type(2)');
+  await page.waitForSelector('#detail:not([hidden])'); await page.waitForTimeout(600);
+  const fs1 = await page.$eval('#tail', (n) => parseFloat(getComputedStyle(n).fontSize));
+  check('session text is at least 17px', fs1 >= 17);
+  await page.click('#fsp'); await page.click('#fsp');
+  const fs2 = await page.$eval('#tail', (n) => parseFloat(getComputedStyle(n).fontSize));
+  check('A+ makes the session text bigger', fs2 === fs1 + 2);
+  await page.click('#fsm'); await page.click('#fsm'); await page.click('#fsm');
+  check('A- makes it smaller', (await page.$eval('#tail', (n) => parseFloat(getComputedStyle(n).fontSize))) === fs1 - 1);
+  await page.click('#fsp');
+  await page.screenshot({ path: `${OUT}/d3-bigtext.png` });
+  await page.click('#dback'); await page.waitForTimeout(300);
 
   // ---- icon tab bar
   const tabs = await page.$$eval('.tab', (n) => n.map((x) => [x.dataset.view, !!x.querySelector('svg'), x.textContent.trim()]));

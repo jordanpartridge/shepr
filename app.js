@@ -258,6 +258,11 @@ const byKey = (k) => agents().find((a) => keyOf(a) === k);
 const inHost = (a) => !S.host || a.host === S.host;
 const waiting = () => agents().filter((a) => a.status === 'blocked' && inHost(a));
 const finished = () => agents().filter((a) => a.status === 'done' && inHost(a));
+const byName = (a, b) => a.host.localeCompare(b.host) || a.project.localeCompare(b.project);
+const sleeping = () => agents().filter((a) => a.status === 'idle' && inHost(a)).sort(byName);
+const working = () => agents().filter((a) => a.status === 'working' && inHost(a)).sort(byName);
+// The Queue, in the order that matters: needs you, finished, sleeping, working.
+const queueList = () => waiting().concat(finished(), sleeping(), working());
 
 // ---------------------------------------------------------------------------
 // 6. Icon tab bar
@@ -401,17 +406,23 @@ function paintMain() {
   const keep = m.scrollTop;
   m.textContent = '';
   if (S.tab === 'waiting') {
-    const w = waiting(), d = finished();
+    const w = waiting(), d = finished(), sl = sleeping(), wk = working();
     if (!w.length && !d.length) {
       const e = el('div', 'empty');
-      const r = el('div', 'radar'); r.append(el('i'), el('i'), el('i'), el('b'));
-      e.append(r, el('b', null, 'Nothing is waiting on you.'));
-      const others = agents().filter(inHost);
-      e.append(others.length + ' session' + (others.length === 1 ? '' : 's') + ' running, none blocked.');
+      const r = el('div', 'radar tiny'); r.append(el('i'), el('i'), el('i'), el('b'));
+      e.append(r, el('b', null, 'Nothing needs you.'));
       m.append(e);
     }
-    if (w.length) { m.append(section('Waiting on you · longest first', w.length)); w.forEach((a, i) => m.append(itemNode(a, 'waiting', false, i))); }
+    if (w.length) { m.append(section('Needs you \u00b7 longest first', w.length)); w.forEach((a, i) => m.append(itemNode(a, 'waiting', false, i))); }
     if (d.length) { m.append(section('Finished, not yet looked at', d.length)); d.forEach((a, i) => m.append(itemNode(a, 'waiting', false, i))); }
+    if (sl.length) {
+      const h = el('div', 'sec secrow');
+      const t = el('span', null, 'Sleeping '); t.append(el('b', null, '(' + sl.length + ')')); h.append(t);
+      if (S.q.writes) h.append(btn('Wake\u2026', 'mini-btn', openWake));
+      m.append(h);
+      sl.forEach((a, i) => m.append(itemNode(a, 'waiting', false, i)));
+    }
+    if (wk.length) { m.append(section('Working', wk.length)); wk.forEach((a, i) => m.append(itemNode(a, 'waiting', false, i))); }
   } else if (S.tab === 'all') {
     const list = agents().filter(inHost);
     let lastHost = null, i = 0;
@@ -551,6 +562,15 @@ function paintKeysView(m) {
   add.append(el('p', 'dim', 'Run this on the host, then tap Scan on the new phone:'), cmd);
   m.append(add);
 
+  const tp = el('div', 'card');
+  tp.append(el('h2', null, 'Top spacing'));
+  const trow = el('div', 'hrow'); trow.style.cssText = 'padding:0;background:none;border:0';
+  const tm = el('div', 'meta'); tm.append(el('div', 'sub', 'Phone reports ' + reportedInset() + 'px at the top. Extra: ' + topx + 'px.'));
+  const redraw = () => { tm.firstChild.textContent = 'Phone reports ' + reportedInset() + 'px at the top. Extra: ' + topx + 'px.'; };
+  trow.append(tm, btn('\u2212', 'mini-btn', () => { topx = Math.max(0, topx - 4); applyTopx(); redraw(); }),
+              btn('+', 'mini-btn', () => { topx = Math.min(60, topx + 4); applyTopx(); redraw(); }));
+  tp.append(trow); m.append(tp);
+
   const row = el('div', 'btns');
   row.append(btn('How to move around', '', openHelp), btn('Forget this phone\u2026', 'bad', forgetThisPhone));
   m.append(row);
@@ -654,19 +674,51 @@ function openGoTo(prefill) {
   openSheet(box);
 }
 
+// ---- wake: one message to each sleeping session you pick, confirm first
+function openWake() {
+  const list = sleeping();
+  if (!list.length) { notify('Nothing is sleeping.', false); return; }
+  const box = el('div');
+  box.append(el('h3', null, 'Wake sleeping sessions'),
+             el('div', 'sub', 'Each picked session gets this one message. You see exactly what goes where before anything is sent.'));
+  const rows = el('div', 'golist');
+  const boxes = [];
+  list.forEach((a) => {
+    const r = el('label', 'chk');
+    const cb = el('input'); cb.type = 'checkbox'; cb.checked = true; boxes.push([cb, a]);
+    const m = el('div', 'meta'); m.append(el('div', 'ttl', label(a)), el('div', 'sub', a.title));
+    r.append(cb, m);
+    rows.append(r);
+  });
+  const msg = el('input', 'wakemsg'); msg.type = 'text'; msg.maxLength = 1000; msg.autocomplete = 'off';
+  msg.value = store.get('shepr.wake', 'Continue where you left off.');
+  const row = el('div', 'btns');
+  const go = btn('Review', 'go', () => {
+    const targets = boxes.filter((x) => x[0].checked).map((x) => ({ host: x[1].host, pane: x[1].pane }));
+    if (!targets.length) { notify('Pick at least one.', true); return; }
+    if (!msg.value.trim()) { notify('Write the message first.', true); return; }
+    store.set('shepr.wake', msg.value.trim());
+    prepare({ kind: 'wake', targets, text: msg.value.trim() });
+  });
+  row.append(btn('Cancel', '', closeSheet), go);
+  box.append(rows, msg, row);
+  openSheet(box);
+}
+
 // ---- confirm a send (or a host change)
 const HOST_KINDS = ['host_enable', 'host_disable', 'host_add', 'device_revoke'];
 function showPlan(plan) {
   const t = plan.target;
   const isHost = HOST_KINDS.indexOf(plan.kind) >= 0;
+  const isWake = plan.kind === 'wake';
   const box = el('div');
-  box.append(el('h3', null, plan.approves ? 'This approves it. Send?' : isHost ? 'Make this change?' : 'Send this?'),
+  box.append(el('h3', null, plan.approves ? 'This approves it. Send?' : isWake ? 'Wake these sessions?' : isHost ? 'Make this change?' : 'Send this?'),
              el('div', 'sub', [t.host, t.title, t.pane].filter(Boolean).join(' · ') + (t.status ? ' · ' + (STATE_LABEL[t.status] || t.status) : '')));
   if (plan.approves) box.append(el('div', 'warnbox', 'The option you picked reads like an approval. Check it is what you mean.'));
   const kv = el('div', 'kv selectable');
   plan.lines.forEach((l) => { kv.append(el('div', 'k', l.k), el('div', 'v', l.v)); });
   box.append(kv);
-  const go = btn(isHost ? 'Do it' : 'Send', 'go' + (plan.approves ? ' appr' : ''), () => commit(plan, go));
+  const go = btn(isWake ? 'Wake them' : isHost ? 'Do it' : 'Send', 'go' + (plan.approves ? ' appr' : ''), () => commit(plan, go));
   // WHY: the sheet appears under the thumb that just tapped Send in the dock. A short dead time
   // stops a double-tap or a late touch from confirming something nobody has read yet.
   go.disabled = true;
@@ -679,8 +731,16 @@ function showPlan(plan) {
 
 function commit(plan, goBtn) {
   goBtn.disabled = true; goBtn.textContent = 'Working…';
-  post('api/send/commit', { nonce: plan.nonce }).then(() => {
+  post('api/send/commit', { nonce: plan.nonce }).then((r) => {
     closeSheet();
+    if (plan.kind === 'wake') {
+      const bits = ['Woke ' + r.woke.length];
+      if (r.skipped.length) bits.push(r.skipped.length + ' skipped (they had moved on)');
+      if (r.failed.length) bits.push(r.failed.length + ' failed: ' + r.failed[0]);
+      notify(bits.join(', ') + '.', r.failed.length > 0);
+      fetchQueue(true);
+      return;
+    }
     if (HOST_KINDS.indexOf(plan.kind) >= 0) {
       notify('Done.', false); loadHosts(); fetchQueue(true);
       return;
@@ -698,7 +758,7 @@ function commit(plan, goBtn) {
 }
 
 function prepare(body) {
-  const isHost = HOST_KINDS.indexOf(body.kind) >= 0;
+  const isHost = HOST_KINDS.indexOf(body.kind) >= 0 || body.kind === 'wake';
   if (!isHost && !S.cur) return;
   const b = isHost ? body : Object.assign({ host: S.cur.host, pane: S.cur.pane }, body);
   post('api/send/prepare', b).then((p) => { p.kind = p.kind || body.kind; showPlan(p); })
@@ -709,7 +769,7 @@ function prepare(body) {
 // 10. Session view
 // ---------------------------------------------------------------------------
 function navList() {
-  if (S.ctx === 'waiting') return agents().filter((a) => a.status === 'blocked' || a.status === 'done').filter(inHost);
+  if (S.ctx === 'waiting') return queueList();
   return agents().filter(inHost);
 }
 function position() {
@@ -730,6 +790,7 @@ function openDetail(host, pane, ctx) {
   if (d.hidden) { d.hidden = false; } else { d.style.animation = 'none'; void d.offsetWidth; d.style.animation = ''; }
   $('tail').textContent = 'reading…';
   $('toast').hidden = true;
+  const g = $('gtoast'); if (g) g.hidden = true;   // a toast left over from the list must not cover this session's buttons
   paintStage(); paintDetailChrome();
   loadTail(true);
 }
@@ -746,6 +807,7 @@ function paintDetailChrome() {
   const { l, i } = position();
   if (a) {
     $('dtitle').textContent = label(a);
+    if (S.q && S.q.hosts.length > 1) $('dtitle').append(el('span', 'htag', a.host));
     $('dsub').textContent = a.title;
     const st = $('dstate');
     let txt = STATE_LABEL[a.status] || a.status;
@@ -790,6 +852,23 @@ gesture($('dhead'), { tap: () => openGoTo(''), dbl: nextWaiting, long: flipPrevi
 $('dback').addEventListener('click', closeDetail);
 $('drefresh').addEventListener('click', () => loadTail(true));
 
+// Session text size: big by default (it is the thing you read), A- / A+ to taste, remembered.
+// Top spacing: the phone's safe-area inset is the right number when iOS reports it, but a Home Screen app has
+// been seen clipping the header anyway, so there is a floor (see app.css) plus this nudge, remembered.
+let topx = Math.max(0, Math.min(60, store.get('shepr.topx', 18)));
+function applyTopx() { document.documentElement.style.setProperty('--topx', topx + 'px'); store.set('shepr.topx', topx); }
+applyTopx();
+function reportedInset() {
+  const p = document.createElement('div');
+  p.style.cssText = 'position:fixed;left:0;top:0;width:0;height:env(safe-area-inset-top,0px);visibility:hidden';
+  document.body.append(p); const h = Math.round(p.getBoundingClientRect().height); p.remove(); return h;
+}
+let tfs = Math.max(13, Math.min(28, store.get('shepr.tfs', 18)));
+function applyTfs() { document.documentElement.style.setProperty('--tfs', tfs + 'px'); store.set('shepr.tfs', tfs); }
+applyTfs();
+$('fsm').addEventListener('click', () => { tfs = Math.max(13, tfs - 1); applyTfs(); });
+$('fsp').addEventListener('click', () => { tfs = Math.min(28, tfs + 1); applyTfs(); });
+
 // Collapse long runs of box-drawing so a wrapped rule is one short line on a phone.
 const RULE = /^[\s─-╿\-_=|]{8,}$/;
 function tidy(text) {
@@ -826,7 +905,7 @@ function loadTail(force) {
         S.tailText = r.text;
         if (first || force || stick) $('tail').scrollTop = $('tail').scrollHeight;
       }
-      $('dtime').textContent = [at.host, at.pane, clock(r.at)].join(' · ');
+      $('dtime').textContent = clock(r.at);
       paintDock(); paintDetailChrome();
     })
     .catch((e) => {
@@ -907,8 +986,8 @@ function notify(msg, isErr) {
     if (nxt.length) t.append(btn('Next waiting (' + nxt.length + ')', '', nextWaiting));
   }
   clearTimeout(toastT);
-  if (!isErr) toastT = setTimeout(() => { t.hidden = true; }, 7000);
-  else t.append(btn('✕', '', () => { t.hidden = true; }));
+  toastT = setTimeout(() => { t.hidden = true; }, isErr ? 12000 : 7000);
+  if (isErr) t.append(btn('✕', '', () => { t.hidden = true; }));
 }
 
 // ---------------------------------------------------------------------------

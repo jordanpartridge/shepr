@@ -345,6 +345,8 @@ def build_plan(body):
         raise HerdrError("read_only", "this server was started read-only (SHEPR_READONLY=1)")
     if body.get("kind") in HOST_KINDS:
         return plan_host(body)
+    if body.get("kind") == "wake":
+        return plan_wake(body)
     host = need_host(str(body.get("host", "")))
     pane = str(body.get("pane", ""))
     if not PANE_RE.match(pane):
@@ -438,6 +440,8 @@ def commit_plan(nonce):
         raise HerdrError("expired", "that preview expired or was already used: look again and re-send")
     if plan["kind"] in HOST_KINDS:
         return commit_host(plan)
+    if plan["kind"] == "wake":
+        return commit_wake(plan)
     host = need_host(plan["host"])
     a = get_agent(host, plan["pane"])
     snap = plan["snap"]
@@ -891,6 +895,79 @@ def commit_host(plan):
     audit(plan, True, "")
     poll_all()
     return {"ok": True, "sent": ["machine"]}
+
+
+WAKE_MAX = 40
+WAKE_GAP_S = 0.5
+
+
+def plan_wake(body):
+    """Send one message to each of several SLEEPING (idle or finished) sessions. A blocked session is a question
+    waiting on a person, so it is refused here: this can never answer a dialog, let alone approve one."""
+    text = body.get("text")
+    if not isinstance(text, str) or not text.strip() or len(text) > 1000 or "\x00" in text or "\n" in text.strip():
+        raise HerdrError("bad_text", "one line, 1 to 1000 characters")
+    targets = body.get("targets")
+    if not isinstance(targets, list) or not 1 <= len(targets) <= WAKE_MAX:
+        raise HerdrError("bad_targets", f"pick 1 to {WAKE_MAX} sessions")
+    items, seen = [], set()
+    for t in targets:
+        hid, pane = str(t.get("host", "")), str(t.get("pane", ""))
+        if not PANE_RE.match(pane):
+            raise HerdrError("bad_pane", "not a pane id")
+        if (hid, pane) in seen:
+            continue
+        seen.add((hid, pane))
+        host = need_host(hid)
+        a = get_agent(host, pane)
+        name = os.path.basename((a.get("cwd") or "").rstrip("/")) or pane
+        if a["agent_status"] not in ("idle", "done"):
+            raise HerdrError("not_sleeping", f"{name} on {hid} is {a['agent_status']}, not sleeping: only idle or "
+                                             "finished sessions can be woken. Reopen the list and look again.")
+        items.append({"host": hid, "pane": pane, "name": name,
+                      "snap": {"status": a["agent_status"], "seq": a.get("state_change_seq"),
+                               "session": (a.get("agent_session") or {}).get("value")}})
+    plan = {"nonce": secrets.token_urlsafe(18), "kind": "wake", "items": items, "text": text.strip(),
+            "expires": time.time() + NONCE_TTL_S}
+    register_plan(plan)
+    names = "\n".join(f"  {i['name']}  ({i['host']})" for i in items)
+    lines = [("Wakes", f"{len(items)} sleeping session{'s' if len(items) != 1 else ''}:\n{names}"),
+             ("Each gets", plan["text"]),
+              ("Note", "one message each, a moment apart. Any that moved on since you looked are skipped. Nothing is approved.")]
+    return {"nonce": plan["nonce"], "kind": "wake", "expires_s": NONCE_TTL_S, "approves": False,
+            "target": {"host": LOCAL, "pane": "", "title": f"{len(items)} sleeping", "project": "", "status": ""},
+            "lines": [{"k": k, "v": v} for k, v in lines]}
+
+
+def commit_wake(plan):
+    # Law 22: waking many agents starts many model turns at once. Do not do that to a machine that is already busy.
+    load = os.getloadavg()[0]
+    if load > (os.cpu_count() or 4):
+        raise HerdrError("busy", f"this host is busy (load {load:.0f}); nothing was sent. Try again in a minute.")
+    sent, skipped, failed = [], [], []
+    for n, it in enumerate(plan["items"]):
+        try:
+            host = need_host(it["host"])
+            a = get_agent(host, it["pane"])
+            snap = it["snap"]
+            if (a["agent_status"], a.get("state_change_seq"), (a.get("agent_session") or {}).get("value")) != \
+                    (snap["status"], snap["seq"], snap["session"]):
+                skipped.append(it["name"])
+                continue
+            run_step(host, it["pane"], {"op": "prompt", "text": plan["text"]})
+            sent.append(it["name"])
+            audit({"host": it["host"], "pane": it["pane"], "kind": "wake",
+                   "steps": [{"op": "prompt", "text": plan["text"]}]}, True, "")
+        except HerdrError as e:
+            failed.append(f"{it['name']}: {e.message}")
+            audit({"host": it["host"], "pane": it["pane"], "kind": "wake",
+                   "steps": [{"op": "prompt", "text": plan["text"]}]}, False, f"{e.code}: {e.message}")
+        if n < len(plan["items"]) - 1:
+            time.sleep(WAKE_GAP_S)
+    if not sent and failed:
+        raise HerdrError("error", "none were woken. " + "; ".join(failed[:3]) +
+                         ". A failed write may still have landed: look at the queue before trying again.")
+    return {"ok": True, "woke": sent, "skipped": skipped, "failed": failed}
 
 
 # --------------------------------------------------------------------------------------------
