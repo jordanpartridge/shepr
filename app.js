@@ -8,7 +8,7 @@
      3. No timer, retry or "auto" anything ever sends. A failed send is reported, never repeated.
      4. The private key never leaves the phone: it is generated non-extractable and only signs. */
 'use strict';
-const BUILD = 'v11';   // keep equal to sw.js VERSION: shown in Keys and logged by the host, so you can see which app a phone is running
+const BUILD = 'v12';   // keep equal to sw.js VERSION: shown in Keys and logged by the host, so you can see which app a phone is running
 
 // ---------------------------------------------------------------------------
 // 1. Service worker. Without this, a dead tailnet shows Safari's error page and
@@ -39,12 +39,13 @@ const store = {
 const REDUCED = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 const clock = (sec) => new Date(sec * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 const keyOf = (a) => a.host + '|' + a.pane;
-// What a session is CALLED everywhere: its project (the directory it runs in), never herdr's session title,
-// which is a summary of the last conversation and changes under you. Two sessions in one project on one
-// host get their pane id added so they can be told apart.
+// What a session is CALLED everywhere: the name Fred gave its herdr workspace (the sidebar name, "Shepr"), or its
+// project directory when the workspace has no name. Never herdr's session title, which is a summary of the last
+// conversation and changes under you. Two sessions with one name on one host get their pane id added.
+const nm = (a) => a.wlabel || a.project;
 function label(a) {
-  const same = (S.q ? S.q.agents : []).filter((x) => x.host === a.host && x.project === a.project);
-  return same.length > 1 ? a.project + ' · ' + a.pane : a.project;
+  const same = (S.q ? S.q.agents : []).filter((x) => x.host === a.host && nm(x) === nm(a));
+  return same.length > 1 ? nm(a) + ' · ' + a.pane : nm(a);
 }
 const enc = new TextEncoder();
 const b64u = (buf) => btoa(String.fromCharCode.apply(null, new Uint8Array(buf))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
@@ -269,11 +270,11 @@ const byKey = (k) => agents().find((a) => keyOf(a) === k);
 const inHost = (a) => !S.host || a.host === S.host;
 const waiting = () => agents().filter((a) => a.status === 'blocked' && inHost(a));
 const finished = () => agents().filter((a) => a.status === 'done' && inHost(a));
-const byName = (a, b) => a.host.localeCompare(b.host) || a.project.localeCompare(b.project);
+const byName = (a, b) => a.host.localeCompare(b.host) || nm(a).localeCompare(nm(b));
 const sleeping = () => agents().filter((a) => a.status === 'idle' && inHost(a)).sort(byName);
 const working = () => agents().filter((a) => a.status === 'working' && inHost(a)).sort(byName);
-// The Queue, in the order that matters: needs you, finished, sleeping, working.
-const queueList = () => waiting().concat(finished(), sleeping(), working());
+// The Queue, in the order that matters: needs you, finished, working, and sleeping last.
+const queueList = () => waiting().concat(finished(), working(), sleeping());
 
 // ---------------------------------------------------------------------------
 // 6. Icon tab bar
@@ -426,6 +427,7 @@ function paintMain() {
     }
     if (w.length) { m.append(section('Needs you \u00b7 longest first', w.length)); w.forEach((a, i) => m.append(itemNode(a, 'waiting', false, i))); }
     if (d.length) { m.append(section('Finished, not yet looked at', d.length)); d.forEach((a, i) => m.append(itemNode(a, 'waiting', false, i))); }
+    if (wk.length) { m.append(section('Working', wk.length)); wk.forEach((a, i) => m.append(itemNode(a, 'waiting', false, i))); }
     if (sl.length) {
       const h = el('div', 'sec secrow');
       const t = el('span', null, 'Sleeping '); t.append(el('b', null, '(' + sl.length + ')')); h.append(t);
@@ -433,12 +435,11 @@ function paintMain() {
       m.append(h);
       sl.forEach((a, i) => m.append(itemNode(a, 'waiting', false, i)));
     }
-    if (wk.length) { m.append(section('Working', wk.length)); wk.forEach((a, i) => m.append(itemNode(a, 'waiting', false, i))); }
   } else if (S.tab === 'all') {
     const list = agents().filter(inHost);
     let lastHost = null, i = 0;
     if (!list.length) m.append(el('div', 'empty', 'No sessions.'));
-    list.slice().sort((a, b) => a.host.localeCompare(b.host) || a.project.localeCompare(b.project)).forEach((a) => {
+    list.slice().sort((a, b) => a.host.localeCompare(b.host) || nm(a).localeCompare(nm(b))).forEach((a) => {
       if (a.host !== lastHost) { m.append(section(a.host)); lastHost = a.host; }
       m.append(itemNode(a, 'all', true, i++));
     });

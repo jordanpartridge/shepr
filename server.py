@@ -262,6 +262,7 @@ def shape_agent(host, a, ws):
         "title": a.get("terminal_title_stripped") or a.get("terminal_title") or a["pane_id"],
         "cwd": cwd, "project": os.path.basename(cwd.rstrip("/")) or cwd or "?",
         "workspace": ws.get(a.get("workspace_id")) or a.get("workspace_id"),
+        "wlabel": ws.get(a.get("workspace_id")) or "",   # the name Fred gave the herdr workspace: what the phone calls the session
         "session": sess[:8], "focused": bool(a.get("focused")),
     }
 

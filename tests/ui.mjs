@@ -125,12 +125,12 @@ const browser = await chromium.launch({ executablePath: '/usr/bin/chromium', arg
   check('reload keeps this phone paired (key survives)', (await page.$$('.item')).length >= 3);
   check('page does not scroll (Law 17)', await page.evaluate(() => document.documentElement.scrollHeight <= innerHeight + 1));
 
-  // ---- queue order: needs you, then sleeping, then working
+  // ---- queue order: needs you, then working, then sleeping last
   const secs = await page.$$eval('#main .sec', (n) => n.map((x) => x.textContent.trim().split(' ')[0]));
   console.log('   sections:', secs.join(' > '));
-  check('queue order: Needs you before Sleeping before Working', secs.indexOf('Needs') === 0 && secs.indexOf('Sleeping') > secs.indexOf('Needs') && (secs.indexOf('Working') === -1 || secs.indexOf('Working') > secs.indexOf('Sleeping')));
+  check('queue order: Needs you before Working before Sleeping', secs.indexOf('Needs') === 0 && secs.indexOf('Sleeping') === secs.length - 1 && (secs.indexOf('Working') === -1 || secs.indexOf('Working') < secs.indexOf('Sleeping')));
   const statuses = await page.$$eval('#main .item', (n) => n.map((x) => x.classList.contains('blocked') ? 'b' : x.classList.contains('working') ? 'w' : 'i').join(''));
-  check('rows are ordered blocked, then sleeping, then working', /^b+i*w*$/.test(statuses));
+  check('rows are ordered blocked, then working, then sleeping', /^b+w*i*$/.test(statuses));
 
   // ---- wake sleeping sessions: confirm first, never a blocked one
   const blockedPane = await page.evaluate(() => window.shepr.S.q.agents.find((a) => a.status === 'blocked'));
