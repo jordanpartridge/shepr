@@ -115,6 +115,14 @@ const browser = await chromium.launch({ executablePath: '/usr/bin/chromium', arg
   await page.screenshot({ path: `${OUT}/q1-queue.png` });
   const ages = await page.$$eval('.item .age', (n) => n.map((x) => x.textContent));
   check('queue shows blocked rows', ages.length >= 3);
+
+  // ---- the host announces the current build; a stale app reloads itself, but only at a safe moment
+  const t0 = await page.evaluate(() => performance.timeOrigin);
+  await page.evaluate(() => window.shepr.appIsStale('v999'));      // on the list, nothing typed, no sheet: safe
+  await page.waitForTimeout(1800);
+  await page.waitForSelector('.item', { timeout: 8000 });
+  check('a stale app reloads itself on the list screen', (await page.evaluate(() => performance.timeOrigin)) !== t0);
+  check('reload keeps this phone paired (key survives)', (await page.$$('.item')).length >= 3);
   check('page does not scroll (Law 17)', await page.evaluate(() => document.documentElement.scrollHeight <= innerHeight + 1));
 
   // ---- queue order: needs you, then sleeping, then working
@@ -164,6 +172,11 @@ const browser = await chromium.launch({ executablePath: '/usr/bin/chromium', arg
   check('A- makes it smaller', (await page.$eval('#tail', (n) => parseFloat(getComputedStyle(n).fontSize))) === fs1 - 1);
   await page.click('#fsp');
   await page.screenshot({ path: `${OUT}/d3-bigtext.png` });
+  // inside a session a stale app must NOT reload under your thumb: it offers an Update button instead
+  const t1 = await page.evaluate(() => performance.timeOrigin);
+  await page.evaluate(() => window.shepr.appIsStale('v999'));
+  await page.waitForTimeout(800);
+  check('in a session: no reload, an Update button appears', (await page.evaluate(() => performance.timeOrigin)) === t1 && (await page.textContent('#toast')).includes('Update'));
   await page.click('#dback'); await page.waitForTimeout(300);
 
   // ---- icon tab bar

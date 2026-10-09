@@ -8,7 +8,7 @@
      3. No timer, retry or "auto" anything ever sends. A failed send is reported, never repeated.
      4. The private key never leaves the phone: it is generated non-extractable and only signs. */
 'use strict';
-const BUILD = 'v8';   // keep equal to sw.js VERSION: shown in Keys and logged by the host, so you can see which app a phone is running
+const BUILD = 'v9';   // keep equal to sw.js VERSION: shown in Keys and logged by the host, so you can see which app a phone is running
 
 // ---------------------------------------------------------------------------
 // 1. Service worker. Without this, a dead tailnet shows Safari's error page and
@@ -161,6 +161,7 @@ async function syncClock() {
   const t0 = Date.now();
   const h = await api('api/hello', { public: true, headers: { 'X-Shepr-Build': BUILD } });
   S.hello = h; S.skew = h.t * 1000 - (t0 + Date.now()) / 2;
+  if (S.dev) appIsStale(h.build);
 }
 
 // ---------------------------------------------------------------------------
@@ -244,13 +245,22 @@ function gesture(node, h) {
 // ---------------------------------------------------------------------------
 // 5. Queue data
 // ---------------------------------------------------------------------------
+// The host says which build is current. A Home Screen app stays alive in iOS memory for days, so without this a phone
+// keeps running old code until you fully close it. Reload at the first SAFE moment (list view, nothing typed, no sheet
+// open); otherwise offer it. Never reload under someone's thumb.
+function appIsStale(serverBuild) {
+  if (!serverBuild || serverBuild === BUILD) return;
+  const busy = ($('msg') && $('msg').value.trim()) || S.sheetOpen || S.keybuf.length || !$('pair').hidden;
+  if (!busy && !S.cur) { location.reload(); return; }
+  notify('A new version of Shepr (' + serverBuild + ') is ready.', false, ['Update', () => location.reload()], true);
+}
 let fetching = false;
 function fetchQueue(fresh) {
   if (fetching || !S.dev) return Promise.resolve();
   fetching = true;
   $('mini').classList.add('busy');
   return api('api/queue' + (fresh ? '?fresh=1' : '')).then((q) => {
-    S.q = q; setOnline(true); render();
+    S.q = q; setOnline(true); render(); appIsStale(q.build);
   }).catch((e) => { if (!e.status) setOnline(false); })
     .finally(() => { fetching = false; setTimeout(() => $('mini').classList.remove('busy'), 400); });
 }
@@ -1048,7 +1058,7 @@ $('compose').addEventListener('submit', (e) => {
 
 // ---- toasts: inside the session view, or floating above the tab bar elsewhere
 let toastT = null;
-function notify(msg, isErr) {
+function notify(msg, isErr, action, sticky) {
   const inDetail = !$('detail').hidden;
   let t = inDetail ? $('toast') : $('gtoast');
   if (!t) { t = el('div', 'toast gtoast'); t.id = 'gtoast'; $('app').append(t); }
@@ -1058,8 +1068,9 @@ function notify(msg, isErr) {
     const nxt = agents().filter((a) => a.status === 'blocked' && keyOf(a) !== S.cur.host + '|' + S.cur.pane);
     if (nxt.length) t.append(btn('Next waiting (' + nxt.length + ')', '', nextWaiting));
   }
+  if (action) t.append(btn(action[0], '', action[1]));
   clearTimeout(toastT);
-  toastT = setTimeout(() => { t.hidden = true; }, isErr ? 12000 : 7000);
+  if (!sticky) toastT = setTimeout(() => { t.hidden = true; }, isErr ? 12000 : 7000);
   if (isErr) t.append(btn('✕', '', () => { t.hidden = true; }));
 }
 
@@ -1255,4 +1266,4 @@ async function boot() {
   hideSplash(false);
 }
 boot();
-window.shepr = { S, ping, standalone, signHeaders, renderBlocks };
+window.shepr = { S, ping, standalone, signHeaders, renderBlocks, appIsStale, BUILD };

@@ -140,6 +140,9 @@ tests/               ui.mjs, sw_offline.mjs, format.mjs, pair_cli_test.py, fake-
 State: `~/.local/state/shepr/` (`devices.json`, `seen.json`, `pairing.json`, `sends.jsonl` audit log), mode 0600.
 Logs: `journalctl --user -u nixweb-herder.remote.iphone -f`. The app shell is fetched network-first (2.5 s, then
 cache) so a change shows on the next open and the app still opens offline.
+The host also announces the current build (`/api/hello`, `/api/queue`). A Home Screen app can stay alive in iOS
+memory for days, so a phone running an older build reloads itself at the first safe moment (on the list, nothing
+typed, no sheet open); inside a session it shows an **Update** button instead. It never reloads under your thumb.
 
 ## Testing without touching real agents
 

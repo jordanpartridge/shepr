@@ -275,6 +275,21 @@ def poller():
         time.sleep(POLL_S)
 
 
+_build_cache = [None, None]
+
+
+def shell_build():
+    """The app version a phone should be running: sw.js VERSION without the "shepr-" prefix. Re-read when sw.js changes."""
+    try:
+        mt = os.path.getmtime(os.path.join(HERE, "sw.js"))
+        if _build_cache[0] != mt:
+            m = re.search(r"VERSION = '([^']+)'", open(os.path.join(HERE, "sw.js")).read())
+            _build_cache[:] = [mt, m.group(1).removeprefix("shepr-") if m else None]
+    except OSError:
+        return None
+    return _build_cache[1]
+
+
 def build_queue():
     now = time.time()
     with LOCK:
@@ -291,7 +306,7 @@ def build_queue():
     agents.sort(key=lambda a: (order.get(a["status"], 4), a.get("since", 0), a.get("seq") or 0,
                                a["host"], a["project"]))
     return {"now": now, "age_s": int(now - ts) if ts else None, "polls": polls, "hosts": hosts,
-            "agents": agents, "writes": not READONLY, "viewer": None, "poll_s": POLL_S}
+            "agents": agents, "writes": not READONLY, "viewer": None, "poll_s": POLL_S, "build": shell_build()}
 
 
 # --------------------------------------------------------------------------------------------
@@ -1065,7 +1080,7 @@ class Handler(SimpleHTTPRequestHandler):
                 # The one request every launch makes first: worth a journal line, it is how you see a phone arrive.
                 print(f"shepr: hello from {net} build={(self.headers.get('X-Shepr-Build') or '?')[:12]} ({(self.headers.get('User-Agent') or '')[:70]})", file=sys.stderr, flush=True)
                 return self.json_out(200, {"app": "shepr", "v": 1, "name": LOCAL, "t": time.time(),
-                                           "paired": bool(devices()), "writes": not READONLY})
+                                           "paired": bool(devices()), "writes": not READONLY, "build": shell_build()})
             if u.path == "/api/pair" and post:
                 return self.json_out(200, do_pair(body, self.headers.get("User-Agent")))
 
