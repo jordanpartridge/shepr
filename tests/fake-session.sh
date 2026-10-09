@@ -28,11 +28,11 @@ case "${1:-}" in
   up)
     (setsid nohup herdr --session hrtest server >/dev/null 2>&1 < /dev/null &); sleep 3
     HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-    mk alpha "$HOME/Projects/burnbar" blocked claude "PR Hunter burnbar"
-    mk beta "$HOME/Projects/clarity" blocked claude "Bug fixes and pull requests"
-    mk gamma "$HOME/Projects/blip" working codex "Release notes draft"
-    mk delta "$HOME/Projects/infomarchy" idle claude "Herdr project list sort order" "$HERE/sample-pane.txt"
-    mk epsilon "$HOME/Projects/clarity" blocked claude "Herder workflow automation" ;;
+    mk burnbar "$HOME/Projects/burnbar" blocked claude "PR Hunter burnbar"
+    mk clarity "$HOME/Projects/clarity" blocked claude "Bug fixes and pull requests"
+    mk blip "$HOME/Projects/blip" working codex "Release notes draft"
+    mk infomarchy "$HOME/Projects/infomarchy" idle claude "Herdr project list sort order" "$HERE/sample-pane.txt"
+    mk clarity "$HOME/Projects/clarity" blocked claude "Herder workflow automation" ;;
   down) herdr session stop hrtest < /dev/null ;;
   env) echo "export HERDR_SOCKET_PATH=$SOCK SHEPR_STATE=/tmp/shepr-test-state SHEPR_POLL=3" ;;
   *) sed -n '2,12p' "$0"; exit 1 ;;
