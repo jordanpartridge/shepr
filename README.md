@@ -60,6 +60,8 @@ On the iPhone, in **Safari**: open `https://<this-host>.<your-tailnet>.ts.net:87
 | **Hosts** | Hosts herdr can reach (turn saved ones on or off) and a tailnet scan for more. |
 | **Keys** | This phone's key, the phones the host trusts (revoke), pair another, **Top spacing**, and the app build (`Shepr v8`) so you can tell which version a phone is running. |
 
+The Queue and Radar show **every host at once**; each session carries a coloured pill naming its machine (`GUS`, `VIC`), and the chips on top (`All hosts`, `gus 3`, `vic 1`) are only a filter if you tap one. `SHEPR_LOCAL_ONLY=1` makes the server ignore remote machines (the tests use it).
+
 Every session is called by its **project** (the directory it runs in), with herdr's session title, the last thing it
 worked on, underneath. Two sessions in one project get their pane id so you can tell them apart.
 

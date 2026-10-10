@@ -159,6 +159,8 @@ def run_herdr(machine, args, timeout=10, want_json=True):
 
 def discover_hosts():
     hosts = [{"id": LOCAL, "machine": None, "kind": "local", "enabled": True}]
+    if os.environ.get("SHEPR_LOCAL_ONLY"):   # tests: never read real remote machines, so a machine being up or down cannot change a result
+        return hosts
     try:
         for m in run_herdr(None, ["machine", "list", "--json"], timeout=6):
             label = m.get("label") or m.get("id")

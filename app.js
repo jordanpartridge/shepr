@@ -8,7 +8,7 @@
      3. No timer, retry or "auto" anything ever sends. A failed send is reported, never repeated.
      4. The private key never leaves the phone: it is generated non-extractable and only signs. */
 'use strict';
-const BUILD = 'v33';   // keep equal to sw.js VERSION: shown in Keys and logged by the host, so you can see which app a phone is running
+const BUILD = 'v34';   // keep equal to sw.js VERSION: shown in Keys and logged by the host, so you can see which app a phone is running
 
 // ---------------------------------------------------------------------------
 // 1. Service worker. Without this, a dead tailnet shows Safari's error page and
@@ -94,7 +94,7 @@ const S = {
   dev: null,          // {id, key, jwk, name}: this phone's identity
   skew: 0,            // server clock minus phone clock, ms
   tab: store.get('shepr.tab', 'waiting'),
-  host: store.get('shepr.host', null),   // host filter
+  host: store.get('shepr.all2') ? store.get('shepr.host', null) : null,   // host filter; the saved one is dropped once, so the Queue starts combined (Fred, 2026-10-10)
   hosts: null,        // /api/hosts
   cur: null,          // {host, pane} of the open session
   prevKey: null,      // the session you were on before this one (hold the title to flip back)
@@ -308,7 +308,12 @@ function fetchQueue(fresh) {
 }
 const agents = () => (S.q ? S.q.agents : []);
 const byKey = (k) => agents().find((a) => keyOf(a) === k);
+if (!store.get('shepr.all2')) { store.set('shepr.all2', true); store.set('shepr.host', null); }
 const inHost = (a) => !S.host || a.host === S.host;
+// Every machine has its own colour (never an amber, green or red: those mean a session's state), shown as a pill wherever a session is named.
+const HOST_COLORS = ['#4dd0ff', '#c084fc', '#f472b6', '#5eead4', '#93c5fd', '#fdba74'];
+function hostColor(id) { const hs = (S.q && S.q.hosts) || [], i = hs.findIndex((h) => h.id === id); return HOST_COLORS[(i < 0 ? 0 : i) % HOST_COLORS.length]; }
+function hostPill(id) { const p = el('span', 'hpill', id); p.style.setProperty('--hc', hostColor(id)); return p; }
 const waiting = () => agents().filter((a) => a.status === 'blocked' && inHost(a));
 // A finished session you have opened is "looked at": it stays listed, but no longer says it is unread. Kept on this phone, per finish
 // (the state_change_seq), so the next time it finishes it is unread again.
@@ -414,8 +419,9 @@ function itemNode(a, ctx, compact, idx) {
     n.append(d);
   } else n.append(ageBox(a));
   const m = el('div', 'meta');
-  const t = el('div', 'ttl', label(a));
-  if (S.q && S.q.hosts.length > 1) t.append(el('span', 'htag', a.host));
+  const t = el('div', 'ttl');
+  if (S.q && S.q.hosts.length > 1) t.append(hostPill(a.host));
+  t.append(label(a));
   let sub = el('div', 'sub', a.title);
   if (a.status === 'blocked' && a.ask) {   // say WHAT it is waiting on, so a wrong "waiting" is obvious at a glance
     sub = a.ask.menu && a.ask.q ? el('div', 'sub ask', a.ask.q + (a.ask.n > 1 ? '  \u00b7  ' + a.ask.n + ' options' : ''))
@@ -457,13 +463,19 @@ function paintHostbar() {
   hb.hidden = (hosts.length < 2 && hosts.every((h) => h.status === 'ok')) || (S.tab !== 'waiting' && S.tab !== 'all');
   hb.textContent = '';
   if (S.host && !hosts.some((h) => h.id === S.host)) { S.host = null; store.set('shepr.host', null); }
+  const setHostTo = (id) => { S.host = id; store.set('shepr.host', id); S.shown.clear(); render(); };
+  if (hosts.length > 1) {
+    const all = el('button', 'chip all' + (S.host ? '' : ' on')); all.append('All hosts');
+    gesture(all, { instant: true, tap: () => setHostTo(null) });
+    hb.append(all);
+  }
   hosts.forEach((h) => {
-    const c = el('button', 'chip' + (S.host === h.id ? ' on' : '') + (h.status !== 'ok' ? ' bad' : ''));
-    c.append(h.id);
+    const c = el('button', 'chip' + (S.host === h.id ? ' on' : '') + (h.status !== 'ok' ? ' bad' : '')); c.style.setProperty('--hc', hostColor(h.id));
+    c.append(el('u'), h.id);
     const blocked = (h.counts && h.counts.blocked) || 0;
     if (h.status !== 'ok') c.append(el('i', null, h.status === 'disabled' ? 'off' : 'down'));
     else if (blocked) c.append(el('i', null, blocked));
-    const setHost = (id) => { S.host = id; store.set('shepr.host', id); S.shown.clear(); render(); };
+    const setHost = setHostTo;
     gesture(c, {
       instant: true,
       tap: () => setHost(S.host === h.id ? null : h.id),
@@ -1191,7 +1203,8 @@ function openAsleep() {
       const r = el('div', 'hrow wake');
       const meta = el('div', 'meta');
       const seen = [it.claude ? 'Claude ' + agoText(it.claude) : '', it.codex ? 'Codex ' + agoText(it.codex) : ''].filter(Boolean).join(' · ');
-      meta.append(el('div', 'ttl', it.label + (multiHost() ? '  ' + it.host : '')),
+      const tt = el('div', 'ttl'); if (multiHost()) tt.append(hostPill(it.host)); tt.append(it.label);
+      meta.append(tt,
                   el('div', 'sub', (seen ? seen + ' · ' : '') + it.cwd.replace(/^\/home\/[^/]+/, '~')));
       r.append(meta);
       [['claude', 'Claude'], ['codex', 'Codex']].forEach(([agent, name]) => {
@@ -1221,7 +1234,8 @@ function openWake() {
   list.forEach((a) => {
     const r = el('label', 'chk');
     const cb = el('input'); cb.type = 'checkbox'; cb.checked = true; boxes.push([cb, a]);
-    const m = el('div', 'meta'); m.append(el('div', 'ttl', label(a)), el('div', 'sub', a.title));
+    const tt = el('div', 'ttl'); if (S.q && S.q.hosts.length > 1) tt.append(hostPill(a.host)); tt.append(label(a));
+    const m = el('div', 'meta'); m.append(tt, el('div', 'sub', a.title));
     r.append(cb, m);
     rows.append(r);
   });
@@ -1394,8 +1408,9 @@ function paintDetailChrome() {
   const a = byKey(S.cur.host + '|' + S.cur.pane) || S.agent;
   const { l, i } = position();
   if (a) {
-    $('dtitle').textContent = label(a);
-    if (S.q && S.q.hosts.length > 1) $('dtitle').append(el('span', 'htag', a.host));
+    $('dtitle').textContent = '';
+    if (S.q && S.q.hosts.length > 1) $('dtitle').append(hostPill(a.host));
+    $('dtitle').append(label(a));
     $('dsub').textContent = a.title;
     const st = $('dstate');
     let txt = STATE_LABEL[a.status] || a.status;
@@ -2238,4 +2253,4 @@ async function boot() {
   hideSplash(false);
 }
 boot();
-window.shepr = { S, ping, standalone, signHeaders, renderBlocks, appIsStale, BUILD, liveCut, syncHistory, prepareUpload, loadLedger, fmtDur, paceLive, budgetVerdict, drafts, currentModel, seenStore, isSeen, finished, finishedSeen, paintMain };
+window.shepr = { S, ping, standalone, signHeaders, renderBlocks, appIsStale, BUILD, liveCut, syncHistory, prepareUpload, loadLedger, fmtDur, paceLive, budgetVerdict, drafts, currentModel, seenStore, isSeen, finished, finishedSeen, paintMain, paintHostbar };

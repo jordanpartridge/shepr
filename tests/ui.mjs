@@ -856,6 +856,27 @@ const browser = await chromium.launch({ executablePath: '/usr/bin/chromium', arg
     await openK(keys[0]); await page.fill('#msg', ''); await backK();
   }
 
+  // ---- all hosts together: no host has to be picked, and every row says which machine it is on
+  {
+    await tap(page, '.tab[data-view=waiting]'); await page.waitForTimeout(400);
+    // the test server reads only the isolated session, so a second machine is simulated: it is added to what the app holds, and removed again
+    await page.evaluate(() => { const S = window.shepr, a = S.S.q.agents; S.keepHosts = S.S.q.hosts.slice(); S.keepAgents = a.slice();
+      S.S.q.hosts.push({ id: 'vic', kind: 'remote', status: 'ok', counts: { blocked: 1 }, asleep: 0 });
+      a.push(Object.assign({}, a.find((x) => x.status === 'blocked'), { host: 'vic', pane: 'wV1:p1', wlabel: 'vic-session', seq: 4000 })); S.S.host = null; S.paintMain(); window.shepr.paintHostbar && window.shepr.paintHostbar(); });
+    const hh = await page.evaluate(() => ({ host: window.shepr.S.host, chips: [...document.querySelectorAll('#hostbar .chip')].map((c) => c.textContent.trim() + (c.classList.contains('on') ? '*' : '')),
+      pills: [...document.querySelectorAll('#main .item')].map((r) => (r.querySelector('.hpill') || {}).textContent || '-'), items: document.querySelectorAll('#main .item').length }));
+    console.log('   hosts view:', JSON.stringify(hh));
+    check('hosts: the Queue shows every host at once by default (no filter), with an "All hosts" chip lit', hh.host === null && /^All hosts\*/.test(hh.chips[0]) && hh.chips.length === 3);
+    check('hosts: every session row carries a coloured pill naming its machine, and the second machine\'s session is in the same list', hh.items > 1 && hh.pills.every((p) => p === 'gus' || p === 'vic') && hh.pills.includes('vic') && hh.pills.includes('gus'));
+    check('hosts: the two machines get different colours', await page.evaluate(() => { const c = (t) => getComputedStyle([...document.querySelectorAll('#main .hpill')].find((p) => p.textContent === t)).color; return c('gus') !== c('vic'); }));
+    await page.screenshot({ path: `${OUT}/h1-queue-all-hosts.png` });
+    await page.evaluate(() => { const S = window.shepr; S.S.q.hosts.splice(0, S.S.q.hosts.length, ...S.keepHosts); S.S.q.agents.splice(0, S.S.q.agents.length, ...S.keepAgents); S.paintMain(); });
+    // a phone that had the old per-host filter saved starts combined, once
+    await page.evaluate(() => { localStorage.removeItem('shepr.all2'); localStorage.setItem('shepr.host', JSON.stringify('gus')); });
+    await page.reload(); await page.waitForSelector('#main .item', { timeout: 20000 });
+    check('hosts: a saved per-host filter from before is dropped once, so the Queue starts combined', await page.evaluate(() => window.shepr.S.host === null && JSON.parse(localStorage.getItem('shepr.host')) === null));
+  }
+
   // ---- radar: every dot carries its name
   {
     await tap(page, '.tab[data-view=all]'); await page.waitForSelector('svg.radar .rdot'); await page.waitForTimeout(600);
