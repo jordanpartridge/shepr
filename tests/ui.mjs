@@ -391,6 +391,83 @@ const browser = await chromium.launch({ executablePath: '/usr/bin/chromium', arg
     await page.click('#dback').catch(() => {}); await page.waitForTimeout(500);
   }
 
+  // ---- no pinch zoom and no sideways scrolling, in every view, with hostile (very long, unbroken) content
+  {
+    const LONG = 'W'.repeat(500), PATHY = 'some/long/path/'.repeat(40), URL = 'https://example.com/' + 'x'.repeat(300);
+    await page.route('**/api/pane*', async (route) => {
+      const res = await route.fetch(); const j = await res.json();
+      j.text = [LONG, PATHY, URL, j.text].join('\n');
+      route.fulfill({ response: res, json: j });
+    });
+    await page.route('**/api/history*', (route) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ source: 'transcript',
+      entries: [{ ts: '2026-10-09T10:00:00Z', r: 'user', x: 'H'.repeat(500) }, { ts: '2026-10-09T10:00:01Z', r: 'assistant', x: 'other/dir/'.repeat(60) + 'https://history.example/' + 'q'.repeat(300) },
+                { r: 'tool', x: 'Bash(' + 'T'.repeat(400) + ')' }, { r: 'result', x: 'R'.repeat(450) }], before: null, size: 9, note: null, at: Date.now() / 1000 }) }));
+    const audit = () => page.evaluate(async () => {
+      const off = [], de = document.documentElement;
+      if (de.scrollWidth > innerWidth + 1) off.push('document ' + de.scrollWidth + '>' + innerWidth);
+      if (document.body.scrollWidth > innerWidth + 1) off.push('body ' + document.body.scrollWidth);
+      const scrollers = [];
+      for (const n of document.querySelectorAll('body, body *')) {
+        const cs = getComputedStyle(n);
+        if (cs.display === 'none' || n.closest('[hidden]')) continue;
+        const name = n.id ? '#' + n.id : n.className && typeof n.className === 'string' ? '.' + n.className.split(' ')[0] : n.tagName;
+        if ((cs.overflowY === 'auto' || cs.overflowY === 'scroll') && cs.overflowX !== 'hidden' && cs.overflowX !== 'clip') off.push(name + ' could scroll sideways (overflow-x ' + cs.overflowX + ')');
+        if (cs.overflowY === 'auto' || cs.overflowY === 'scroll') scrollers.push(n);
+        const r = n.getBoundingClientRect();
+        if (r.width > 0 && (r.right > innerWidth + 1 || r.left < -1) && cs.position !== 'fixed') off.push(name + ' sticks out of the screen (' + Math.round(r.left) + '..' + Math.round(r.right) + ')');
+      }
+      for (const n of [de, ...scrollers]) n.scrollLeft = 80;                // try to push everything sideways
+      await new Promise((r) => setTimeout(r, 150));
+      for (const n of [de, ...scrollers]) if (n.scrollLeft !== 0) off.push((n.id || n.className || 'document') + ' moved sideways to ' + n.scrollLeft);
+      return off;
+    });
+    const noSide = async (label) => { const off = await audit(); if (off.length) console.log('   sideways (' + label + '):', JSON.stringify(off.slice(0, 5))); check('no sideways scroll: ' + label, off.length === 0); };
+
+    await tap(page, '.tab[data-view=waiting]'); await page.waitForTimeout(500);
+    await noSide('queue');
+    await hold(page, '.item:nth-of-type(2)', 650);
+    await page.waitForSelector('#sheet:not([hidden]) .peek'); await page.waitForTimeout(400);
+    await noSide('peek sheet (long pane text)');
+    await page.click('#sheet .btns button:first-child'); await page.waitForTimeout(300);
+    await page.click('#main .secrow .mini-btn'); await page.waitForSelector('#sheet:not([hidden]) .chk'); await page.waitForTimeout(300);
+    await page.fill('#sheet textarea, #sheet input[type=text]', LONG).catch(() => {});
+    await noSide('wake sheet');
+    await page.click('#sheet .btns button:first-child'); await page.waitForTimeout(300);
+
+    const bk2 = await page.evaluate(() => { const a = window.shepr.S.q.agents.find((x) => x.status === 'blocked'); return a.host + '|' + a.pane; });
+    await tap(page, `.item[data-key="${bk2}"]`);
+    await page.waitForSelector('#detail:not([hidden])'); await page.waitForSelector('#hist .hent', { timeout: 8000 }); await page.waitForTimeout(400);
+    await noSide('session view (long pane text and long history)');
+    await page.screenshot({ path: `${OUT}/z1-long-content.png` });
+    await page.fill('#msg', LONG + ' ' + URL); await page.click('#send'); await page.waitForSelector('#sheet:not([hidden]) .kv'); await page.waitForTimeout(300);
+    await noSide('confirm sheet (long message)');
+    await page.click('#sheet .btns button:first-child'); await page.waitForTimeout(300);
+    await page.fill('#msg', '');
+    await page.click('#dback'); await page.waitForTimeout(400);
+    await tap(page, '.tab[data-view=go]'); await page.waitForSelector('#sheet:not([hidden]) .search'); await page.fill('#sheet .search', LONG); await page.waitForTimeout(300);
+    await noSide('go-to (long search)');
+    await page.evaluate(() => document.getElementById('shade').click()); await page.waitForTimeout(300);
+    for (const v of ['all', 'hosts', 'keys']) { await tap(page, `.tab[data-view=${v}]`); await page.waitForTimeout(500); await noSide('tab ' + v); }
+    await tap(page, '.tab[data-view=waiting]'); await page.waitForTimeout(300);
+    await page.unroute('**/api/pane*'); await page.unroute('**/api/history*');
+
+    // pinch zoom: the page must refuse it
+    const meta = await page.getAttribute('meta[name=viewport]', 'content');
+    check('zoom: the viewport forbids scaling (user-scalable=no, minimum and maximum scale 1)', /user-scalable=no/.test(meta) && /maximum-scale=1\b/.test(meta) && /minimum-scale=1\b/.test(meta));
+    const ta = await page.evaluate(() => ['body', '#main', '#tail', '#send', '.item', '.tab', '#msg', '.sheet', 'html'].map((q) => { const n = document.querySelector(q); return n ? [q, getComputedStyle(n).touchAction] : null; }).filter(Boolean));
+    check('zoom: touch-action is pan-y on every kind of element (iOS ignores user-scalable)', ta.length >= 8 && ta.every(([, v]) => v === 'pan-y'));
+    check('zoom: Safari gesture events (pinch) are cancelled', await page.evaluate(() => ['gesturestart', 'gesturechange', 'gestureend'].every((t) => { const e = new Event(t, { cancelable: true, bubbles: true }); document.body.dispatchEvent(e); return e.defaultPrevented; })));
+    check('zoom: a two-finger move is cancelled', await page.evaluate(() => { const mkT = (id, x) => new Touch({ identifier: id, target: document.body, clientX: x, clientY: 200 });
+      const e = new TouchEvent('touchmove', { cancelable: true, bubbles: true, touches: [mkT(1, 100), mkT(2, 200)], changedTouches: [mkT(1, 100)] }); document.body.dispatchEvent(e); return e.defaultPrevented; }));
+    check('zoom: a one-finger move is NOT cancelled (scrolling still works)', await page.evaluate(() => { const t = new Touch({ identifier: 1, target: document.body, clientX: 100, clientY: 200 });
+      const e = new TouchEvent('touchmove', { cancelable: true, bubbles: true, touches: [t], changedTouches: [t] }); document.body.dispatchEvent(e); return !e.defaultPrevented; }));
+    check('zoom: ctrl+wheel (trackpad pinch) is cancelled', await page.evaluate(() => { const e = new WheelEvent('wheel', { ctrlKey: true, deltaY: -50, cancelable: true, bubbles: true }); document.body.dispatchEvent(e); return e.defaultPrevented; }));
+    const cdp = await page.context().newCDPSession(page);
+    await cdp.send('Input.synthesizePinchGesture', { x: 195, y: 300, scaleFactor: 2.5, relativeSpeed: 600, gestureSourceType: 'touch' }).catch(() => {});
+    await page.waitForTimeout(300);
+    check('zoom: a real synthesized pinch leaves the page at scale 1', (await page.evaluate(() => window.visualViewport.scale)) === 1);
+  }
+
   // ---- revocation signs the phone out
   cli('revoke', myId);
   await page.evaluate(() => window.shepr.S.q && fetch('api/queue').catch(() => 0));

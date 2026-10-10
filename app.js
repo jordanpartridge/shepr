@@ -8,7 +8,7 @@
      3. No timer, retry or "auto" anything ever sends. A failed send is reported, never repeated.
      4. The private key never leaves the phone: it is generated non-extractable and only signs. */
 'use strict';
-const BUILD = 'v16';   // keep equal to sw.js VERSION: shown in Keys and logged by the host, so you can see which app a phone is running
+const BUILD = 'v17';   // keep equal to sw.js VERSION: shown in Keys and logged by the host, so you can see which app a phone is running
 
 // ---------------------------------------------------------------------------
 // 1. Service worker. Without this, a dead tailnet shows Safari's error page and
@@ -47,6 +47,15 @@ function label(a) {
   const same = (S.q ? S.q.agents : []).filter((x) => x.host === a.host && nm(x) === nm(a));
   return same.length > 1 ? nm(a) + ' · ' + a.pane : nm(a);
 }
+// No pinch zoom and no sideways scrolling. iOS ignores user-scalable=no, so also stop the gesture itself (the old Safari
+// gesture events, any multi-finger move, a trackpad pinch that arrives as ctrl+wheel), and snap any sideways scroll back.
+['gesturestart', 'gesturechange', 'gestureend'].forEach((ev) => document.addEventListener(ev, (e) => e.preventDefault(), { passive: false }));
+document.addEventListener('touchmove', (e) => { if (e.touches && e.touches.length > 1) e.preventDefault(); }, { passive: false });
+document.addEventListener('wheel', (e) => { if (e.ctrlKey) e.preventDefault(); }, { passive: false });
+document.addEventListener('scroll', (e) => {
+  const t = e.target === document ? document.scrollingElement : e.target;
+  if (t && t.scrollLeft) t.scrollLeft = 0;
+}, true);
 const enc = new TextEncoder();
 const b64u = (buf) => btoa(String.fromCharCode.apply(null, new Uint8Array(buf))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 const hex = (buf) => Array.prototype.map.call(new Uint8Array(buf), (x) => x.toString(16).padStart(2, '0')).join('');

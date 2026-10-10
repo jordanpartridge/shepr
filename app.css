@@ -37,8 +37,13 @@ body{-webkit-user-select:none;user-select:none;
   -webkit-touch-callout:none}
 .selectable,input,textarea{-webkit-user-select:text;user-select:text;-webkit-touch-callout:default}
 
-/* WHY: removes the 300ms double-tap-to-zoom delay without disabling pinch zoom entirely. */
-button,.tab,a,.item,.chip{touch-action:manipulation}
+/* WHY: no pinch zoom, no double-tap zoom and no sideways panning, anywhere. iOS ignores user-scalable=no and
+   maximum-scale, so touch-action is what actually stops it (iOS 13+); app.js also blocks the older gesture events.
+   pan-y leaves only vertical panning, which is all this app uses. (The old "manipulation" here allowed pinch.) */
+html,body,*{touch-action:pan-y}
+/* Every box that scrolls, scrolls vertically only. Setting overflow-y alone turns overflow-x into "auto". */
+.scroll,.tail,.golist,.devbox,.peek,.kv,.sheet,textarea{overflow-x:hidden}
+html,body{max-width:100%;overflow-x:hidden}
 button{font:inherit;color:inherit}
 /* WHY: classes below set display:flex, which silently beats the [hidden] attribute and leaves
    empty strips on screen. This makes hidden mean hidden everywhere. */
