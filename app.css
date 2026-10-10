@@ -386,6 +386,7 @@ button{font:inherit;color:inherit}
 @keyframes fade{from{opacity:0}to{opacity:1}}
 @keyframes rise{from{opacity:0;transform:translateY(16px) scale(.97)}to{opacity:1;transform:none}}
 @keyframes slidein{from{transform:translateX(100%)}to{transform:none}}
+@keyframes slideinl{from{transform:translateX(-100%)}to{transform:none}}
 @keyframes sheetup{from{transform:translateY(100%)}to{transform:none}}
 @keyframes pop{from{opacity:0;transform:scale(.7)}to{opacity:1;transform:none}}
 @keyframes bump{0%{transform:scale(1)}40%{transform:translateY(-5px) scale(1.3)}100%{transform:translateY(-1px) scale(1.12)}}
@@ -474,3 +475,13 @@ button{font:inherit;color:inherit}
 .ptr{position:fixed;left:50%;margin-left:-16px;width:32px;height:32px;padding:6px;border-radius:50%;background:#0b1018;border:1px solid #1a2635;box-shadow:0 0 14px rgba(0,240,255,.35);opacity:0;pointer-events:none;z-index:20;transition:opacity .15s}
 .ptr svg{width:100%;height:100%;fill:none;stroke:#00f0ff;stroke-width:2.4;stroke-linecap:round;stroke-linejoin:round}
 .ptr.spin svg{animation:spin .8s linear infinite}
+
+.seg{display:flex;gap:8px;margin-bottom:8px}
+.seg .mini-btn{flex:1 1 0}
+.seg .mini-btn.on{background:rgba(0,240,255,.16);color:#fff}
+.mini-btn:disabled{opacity:.35;border-color:var(--line);color:var(--dim)}
+
+.hrow.wake{flex-wrap:wrap;row-gap:8px}
+.hrow.wake .meta{flex:1 1 100%}
+.hrow.wake .sub{white-space:normal;overflow-wrap:anywhere}
+.hrow.wake .mini-btn{flex:1 1 0}

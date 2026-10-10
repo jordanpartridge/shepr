@@ -69,6 +69,10 @@ worked on, underneath. Two sessions in one project get their pane id so you can 
 
 None of these ever sends anything.
 
+In a session, **swipe left** for the next open project and **swipe right** for the previous one (the same order as the arrow
+buttons). The swipe has to be quick, mostly sideways and at least 70 px, and it is ignored when it starts in the message box
+or the key dock, or while you are selecting text, so it cannot fight scrolling or typing.
+
 ### Reading a session
 
 The pane is a terminal: 100+ fixed-width columns. On a phone that wraps mid-line with no alignment, so Shepr
@@ -95,6 +99,16 @@ built-in commands), matching names and descriptions. Typing `/be…` filters the
 never offered as a one-tap chip, and a session sitting at a dialog gets no slash row (typing goes into the dialog).
 A slash command still goes through the preview-and-confirm sheet like any prompt. For a remote host only the built-in
 commands are listed: its skills are not read from here.
+
+### Wake a project that is asleep
+
+At the bottom of the Queue, **Asleep (N)** counts herdr projects whose terminal has no Claude or Codex session running. **Wake…**
+opens a searchable list, most recently used first, with **Resume last** or **Start new** at the top and **Claude** or **Codex**
+on each project. Tapping one shows exactly what will be typed (`claude --continue`, `codex resume --last`, or a plain
+`claude` / `codex`) and the directory, and nothing runs until you confirm. It refuses unless that terminal is sitting at an
+idle shell prompt, so it can never type into a build, an editor or a running program, and it checks again at the moment you
+confirm. Resume is greyed out for a project with no earlier conversation on this host. The commands can be changed with
+`SHEPR_CLAUDE_CMD` and `SHEPR_CODEX_CMD` (the tests set them to an echo). Once started, the agent appears in the Queue within seconds.
 
 ### Wake
 
@@ -195,7 +209,7 @@ typed, no sheet open); inside a session it shows an **Update** button instead. I
 tests/fake-session.sh up                       # isolated herdr session "hrtest" with fake agents
 eval "$(tests/fake-session.sh env)"
 export SHEPR_URL=http://localhost:8743 SHEPR_POLL=3 CLAUDE_HOME=$PWD/tests/fixtures/claude-home   # the UI test expects these fixture skills
-python3 server.py 8743 &
+SHEPR_CLAUDE_CMD='echo STARTED' SHEPR_CODEX_CMD='echo CODEX' CODEX_HOME=$PWD/tests/fixtures/codex-home python3 server.py 8743 &   # what is typed when you wake a project: echoes, so tests never start a real agent
 node tests/ui.mjs; node tests/sw_offline.mjs; node tests/format.mjs; python3 tests/pair_cli_test.py
 python3 tests/menu_parse_test.py; python3 tests/server_hardening_test.py; python3 tests/history_test.py   # pure Python, no server needed
 node tests/shots.mjs                           # regenerates docs/img/screens.png from the RUNNING app

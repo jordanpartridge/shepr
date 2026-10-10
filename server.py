@@ -361,6 +361,9 @@ def note_seen(host, agents, now):
             print(f"shepr: cannot persist state: {e}", file=sys.stderr)
 
 
+ASLEEP_N = {}   # host id -> how many herdr workspaces have no agent running (the count behind "Asleep")
+
+
 def poll_host(host):
     try:
         return _poll_host(host)
@@ -381,8 +384,9 @@ def _poll_host(host):
     agents = [a for a in agents if isinstance(a, dict) and isinstance(a.get("pane_id"), str)
               and isinstance(a.get("agent_status"), str)]
     try:
-        ws = {w["workspace_id"]: w.get("label") for w in
-              run_herdr(host["machine"], ["workspace", "list"], timeout=9)["result"]["workspaces"]}
+        wlist = run_herdr(host["machine"], ["workspace", "list"], timeout=9)["result"]["workspaces"]
+        ws = {w["workspace_id"]: w.get("label") for w in wlist}
+        ASLEEP_N[host["id"]] = sum(1 for w in wlist if isinstance(w, dict) and w.get("agent_status") == "unknown")
     except (HerdrError, KeyError, TypeError):
         ws = {}
     with LOCK:
@@ -400,7 +404,7 @@ def poll_all():
                 results[host["id"]] = (agents, ws, err)
     out_hosts, out_agents = [], []
     for h in hosts:
-        entry = {"id": h["id"], "kind": h["kind"], "status": "ok", "error": None, "counts": {}}
+        entry = {"id": h["id"], "kind": h["kind"], "status": "ok", "error": None, "counts": {}, "asleep": ASLEEP_N.get(h["id"], 0)}
         if not h["enabled"]:
             entry.update(status="disabled", error=f"saved machine is disabled (herdr machine enable {h['id']})")
         else:
@@ -555,6 +559,8 @@ def build_plan(body):
         return plan_host(body)
     if body.get("kind") == "wake":
         return plan_wake(body)
+    if body.get("kind") == "start":
+        return plan_start(body)
     host = need_host(str(body.get("host", "")))
     pane = str(body.get("pane", ""))
     if not PANE_RE.match(pane):
@@ -674,6 +680,8 @@ def run_step(host, pane, step):
         return run_herdr(m, ["pane", "send-keys", pane] + step["keys"], timeout=10, want_json=False)
     if step["op"] == "text":
         return run_herdr(m, ["pane", "send-text", pane, "--", step["text"]], timeout=10, want_json=False)
+    if step["op"] == "run":
+        return run_herdr(m, ["pane", "run", pane, step["cmd"]], timeout=10, want_json=False)
     if step["op"] == "prompt":
         # No "--" here: `agent prompt` takes the text as a hyphen-tolerant positional and treats "--" as text.
         return run_herdr(m, ["agent", "prompt", pane, step["text"]], timeout=15, want_json=False)
@@ -698,6 +706,8 @@ def commit_plan(nonce):
         return commit_host(plan)
     if plan["kind"] == "wake":
         return commit_wake(plan)
+    if plan["kind"] == "start":
+        return commit_start(plan)
     host = need_host(plan["host"])
     with pane_lock(plan["host"], plan["pane"]):   # verify and dispatch as one step per pane
         return _commit_pane_plan(host, plan)
@@ -1325,6 +1335,168 @@ WAKE_MAX = 40
 WAKE_GAP_S = 0.5
 
 
+
+# --------------------------------------------------------------------------------------------
+# waking a PROJECT: a herdr workspace whose terminal has no agent in it. Shepr types `claude --continue` (or a fresh
+# `claude`) into that terminal, but ONLY when the terminal is an idle shell prompt, and only after you confirm.
+# --------------------------------------------------------------------------------------------
+SHELLS = {"bash", "zsh", "fish", "sh", "dash"}
+START_CMD = os.environ.get("SHEPR_CLAUDE_CMD", "claude")   # the command typed into the terminal (tests use an echo)
+CODEX_CMD = os.environ.get("SHEPR_CODEX_CMD", "codex")
+CODEX_HOME = os.environ.get("CODEX_HOME") or os.path.expanduser("~/.codex")
+AGENTS = {"claude": "Claude", "codex": "Codex"}
+_codex_idx = {"t": 0.0, "map": {}, "cwd_of": {}}
+
+
+def codex_last_active(cwd):
+    """Local only: when the newest Codex session that ran in this directory was last written, or None. Codex records the
+    directory in the first line of every session file; the index is rebuilt at most once a minute."""
+    ix = _codex_idx
+    if time.time() - ix["t"] > 60:
+        m = {}
+        for root, _dirs, files in os.walk(os.path.join(CODEX_HOME, "sessions")):
+            for fn in files:
+                if not fn.endswith(".jsonl"):
+                    continue
+                path = os.path.join(root, fn)
+                try:
+                    mt = os.path.getmtime(path)
+                    if path not in ix["cwd_of"]:
+                        with open(path, "rb") as f:
+                            first = json.loads(f.readline(400_000))
+                        ix["cwd_of"][path] = ((first.get("payload") or {}).get("cwd") or "") if first.get("type") == "session_meta" else ""
+                    c = ix["cwd_of"][path]
+                    if c:
+                        m[c] = max(m.get(c, 0), mt)
+                except (OSError, ValueError):
+                    continue
+        ix["map"], ix["t"] = m, time.time()
+    return ix["map"].get(cwd)
+
+
+def project_last_active(cwd):
+    """Local only: when the newest Claude conversation in this directory was last written, or None if it has none."""
+    d = os.path.join(CLAUDE_HOME, "projects", re.sub(r"[^A-Za-z0-9]", "-", cwd or ""))
+    try:
+        return max((e.stat().st_mtime for e in os.scandir(d) if e.name.endswith(".jsonl")), default=None)
+    except OSError:
+        return None
+
+
+def ago(ts):
+    s = max(0, int(time.time() - ts))
+    for n, unit in ((86400 * 30, "month"), (86400 * 7, "week"), (86400, "day"), (3600, "hour"), (60, "minute")):
+        if s >= n:
+            k = s // n
+            return f"{k} {unit}{'s' if k != 1 else ''} ago"
+    return "just now"
+
+
+def asleep_view():
+    """Every project with no agent running, newest conversation first, across all enabled hosts."""
+    items, errors = [], []
+    for h in discover_hosts():
+        if not h["enabled"]:
+            continue
+        try:
+            wl = {w["workspace_id"]: w for w in run_herdr(h["machine"], ["workspace", "list"], timeout=9)["result"]["workspaces"]}
+            panes = run_herdr(h["machine"], ["pane", "list"], timeout=9)["result"]["panes"]
+        except (HerdrError, KeyError, TypeError) as e:
+            errors.append({"host": h["id"], "error": str(e)[:160]})
+            continue
+        done = set()
+        for p in panes:
+            if not isinstance(p, dict) or p.get("agent_status") != "unknown" or p.get("agent") or not isinstance(p.get("pane_id"), str):
+                continue
+            wsid = p.get("workspace_id")
+            w = wl.get(wsid) or {}
+            if wsid in done or w.get("agent_status") != "unknown":   # a workspace with an agent anywhere is not asleep
+                continue
+            done.add(wsid)
+            cwd = p.get("foreground_cwd") or p.get("cwd") or ""
+            items.append({"host": h["id"], "pane": p["pane_id"], "label": w.get("label") or os.path.basename(cwd.rstrip("/")) or p["pane_id"],
+                          "cwd": cwd})
+            if h["kind"] == "local":
+                it = items[-1]
+                it["claude"], it["codex"] = project_last_active(cwd), codex_last_active(cwd)
+                it["last"] = max(it["claude"] or 0, it["codex"] or 0) or None
+            else:
+                items[-1].update(claude=None, codex=None, last=None)
+    items.sort(key=lambda i: (-(i["last"] or 0), i["label"].lower()))
+    return {"items": items[:400], "errors": errors, "at": time.time()}
+
+
+def pane_idle_shell(host, pane):
+    """The pane, provided no agent is in it and its ONLY foreground process is its own idle shell."""
+    m = host["machine"]
+    info = run_herdr(m, ["pane", "get", pane], timeout=8)["result"]["pane"]
+    if info.get("agent_status") != "unknown" or info.get("agent"):
+        raise HerdrError("not_asleep", "an agent is already running in that terminal")
+    pi = run_herdr(m, ["pane", "process-info", "--pane", pane], timeout=8)["result"]["process_info"]
+    fg = pi.get("foreground_processes") or []
+    if len(fg) != 1 or fg[0].get("pid") != pi.get("shell_pid") or fg[0].get("name") not in SHELLS:
+        names = ", ".join(str(f.get("name")) for f in fg) or "something"
+        raise HerdrError("not_idle_shell", f"that terminal is running {names}, not an idle shell prompt, so nothing was started in it")
+    return info, pi
+
+
+def plan_start(body):
+    host = need_host(str(body.get("host", "")))
+    pane = str(body.get("pane", ""))
+    if not PANE_RE.match(pane):
+        raise HerdrError("bad_pane", "not a pane id")
+    mode = body.get("mode")
+    if mode not in ("continue", "fresh"):
+        raise HerdrError("bad_mode", "mode must be continue or fresh")
+    agent = body.get("agent", "claude")
+    if agent not in AGENTS:
+        raise HerdrError("bad_agent", "agent must be claude or codex")
+    info, pi = pane_idle_shell(host, pane)
+    cwd = info.get("foreground_cwd") or info.get("cwd") or ""
+    try:
+        label = next((w.get("label") for w in run_herdr(host["machine"], ["workspace", "list"], timeout=8)["result"]["workspaces"]
+                      if w.get("workspace_id") == info.get("workspace_id")), None)
+    except (HerdrError, KeyError, TypeError):
+        label = None
+    label = label or os.path.basename(cwd.rstrip("/")) or pane
+    if agent == "claude":
+        cmd = START_CMD + (" --continue" if mode == "continue" else "")
+        last = project_last_active(cwd) if host["kind"] == "local" else None
+    else:
+        cmd = CODEX_CMD + (" resume --last" if mode == "continue" else "")
+        last = codex_last_active(cwd) if host["kind"] == "local" else None
+    who = AGENTS[agent]
+    plan = {"nonce": secrets.token_urlsafe(18), "host": host["id"], "pane": pane, "kind": "start",
+            "steps": [{"op": "run", "cmd": cmd}], "snap": {"pid": pi.get("shell_pid"), "cwd": cwd},
+            "expires": time.time() + NONCE_TTL_S}
+    register_plan(plan)
+    lines = [("Starts", f"{who}: {cmd}"), ("In", cwd), ("Project", f"{label}  ({host['id']}, {pane})")]
+    if mode == "continue":
+        lines.append(("Resumes", f"the last {who} conversation there, from {ago(last)}" if last else f"the last {who} conversation there, if it has one"))
+    else:
+        lines.append(("Starts", f"a new {who} conversation"))
+    lines.append(("Note", "types that command into the terminal and presses Enter. Nothing else is sent, and nothing is approved."))
+    return {"nonce": plan["nonce"], "kind": "start", "expires_s": NONCE_TTL_S, "approves": False,
+            "target": {"host": host["id"], "pane": pane, "title": label, "project": "", "status": "asleep"},
+            "lines": [{"k": k, "v": v} for k, v in lines]}
+
+
+def commit_start(plan):
+    host = need_host(plan["host"])
+    with pane_lock(plan["host"], plan["pane"]):
+        info, pi = pane_idle_shell(host, plan["pane"])   # still asleep, still an idle shell?
+        cwd = info.get("foreground_cwd") or info.get("cwd") or ""
+        if pi.get("shell_pid") != plan["snap"]["pid"] or cwd != plan["snap"]["cwd"]:
+            raise HerdrError("moved_on", "that terminal changed since you looked, so nothing was started.")
+        try:
+            run_step(host, plan["pane"], plan["steps"][0])
+        except HerdrError as e:
+            audit(plan, False, f"{e.code}: {e.message}")
+            raise HerdrError(e.code, f"{e.message}. A failed write may still have landed: look at the terminal before trying again.")
+    audit(plan, True, "")
+    return {"ok": True, "sent": ["run"]}
+
+
 def plan_wake(body):
     """Send one message to each of several SLEEPING (idle or finished) sessions. A blocked session is a question
     waiting on a person, so it is refused here: this can never answer a dialog, let alone approve one."""
@@ -1534,6 +1706,8 @@ class Handler(SimpleHTTPRequestHandler):
                 return self.json_out(200, {"source": "pane", "text": text, "entries": [], "before": None, "at": time.time(),
                                            "note": "the full history is only available for Claude sessions on this host; "
                                                    "this is the most herdr keeps (about 1,000 lines)"})
+            if not post and u.path == "/api/asleep":
+                return self.json_out(200, asleep_view())
             if not post and u.path == "/api/commands":
                 return self.json_out(200, commands_view(need_host(q.get("host", ""))))
             if not post and u.path == "/api/hosts":

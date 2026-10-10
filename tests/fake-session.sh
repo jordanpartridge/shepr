@@ -27,6 +27,8 @@ mk(){ # label cwd state [agent] [title] [file-to-show]
 case "${1:-}" in
   up)
     (setsid nohup herdr --session hrtest server >/dev/null 2>&1 < /dev/null &); sleep 3
+    # a saved session comes back with every workspace earlier runs made: start from none, so tests are deterministic
+    for w in $(H workspace list | python3 -c 'import json,sys;[print(w["workspace_id"]) for w in json.load(sys.stdin)["result"]["workspaces"]]'); do H workspace close "$w" >/dev/null 2>&1 || true; done
     HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
     mk burnbar "$HOME/Projects/burnbar" blocked claude "PR Hunter burnbar"
     mk clarity "$HOME/Projects/clarity" blocked claude "Bug fixes and pull requests"
@@ -36,6 +38,12 @@ case "${1:-}" in
   multi) H workspace list | python3 -c 'import json,sys;[print(w["workspace_id"]) for w in json.load(sys.stdin)["result"]["workspaces"] if w["label"]=="multi"]' | while read w; do H workspace close "$w" >/dev/null; done
     HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
     mk multi "$HOME/Projects/whats-next" blocked claude "Project customization walkthrough" "$HERE/sample-multi.txt" ;;
+  asleep) mkdir -p /tmp/shepr-dormant /tmp/shepr-busy
+    for w in $(H workspace list | python3 -c 'import json,sys;[print(w["workspace_id"]) for w in json.load(sys.stdin)["result"]["workspaces"] if w["label"] in ("dormant","busy")]'); do H workspace close "$w" >/dev/null; done
+    H workspace create --label dormant --cwd /tmp/shepr-dormant >/dev/null     # a bare shell prompt, and a conversation on file for it
+    b=$(H workspace create --label busy --cwd /tmp/shepr-busy | python3 -c 'import json,sys;print(json.load(sys.stdin)["result"]["root_pane"]["pane_id"])')
+    H pane run "$b" "sleep 100000" >/dev/null; sleep 1; echo "dormant + busy created" ;;
+  asleep-rm) for w in $(H workspace list | python3 -c 'import json,sys;[print(w["workspace_id"]) for w in json.load(sys.stdin)["result"]["workspaces"] if w["label"] in ("dormant","busy")]'); do H workspace close "$w" >/dev/null; done ;;
   multi-rm) H workspace list | python3 -c 'import json,sys;[print(w["workspace_id"]) for w in json.load(sys.stdin)["result"]["workspaces"] if w["label"]=="multi"]' | while read w; do H workspace close "$w" >/dev/null; done ;;
   down) herdr session stop hrtest < /dev/null ;;
   env) echo "export HERDR_SOCKET_PATH=$SOCK SHEPR_STATE=/tmp/shepr-test-state SHEPR_POLL=3" ;;

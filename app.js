@@ -8,7 +8,7 @@
      3. No timer, retry or "auto" anything ever sends. A failed send is reported, never repeated.
      4. The private key never leaves the phone: it is generated non-extractable and only signs. */
 'use strict';
-const BUILD = 'v17';   // keep equal to sw.js VERSION: shown in Keys and logged by the host, so you can see which app a phone is running
+const BUILD = 'v18';   // keep equal to sw.js VERSION: shown in Keys and logged by the host, so you can see which app a phone is running
 
 // ---------------------------------------------------------------------------
 // 1. Service worker. Without this, a dead tailnet shows Safari's error page and
@@ -454,6 +454,15 @@ function paintMain() {
       m.append(h);
       sl.forEach((a, i) => m.append(itemNode(a, 'waiting', false, i)));
     }
+    // Projects with no agent running at all (a terminal sitting at a shell prompt). One row, because there can be
+    // dozens; the picker behind it is searchable and puts the most recently used first.
+    const asleep = (S.q.hosts || []).filter((h) => !S.host || h.id === S.host).reduce((n, h) => n + (h.asleep || 0), 0);
+    if (asleep && S.q.writes) {
+      const h = el('div', 'sec secrow'); h.id = 'asleeprow';
+      const t = el('span', null, 'Asleep '); t.append(el('b', null, '(' + asleep + ')')); h.append(t);
+      h.append(btn('Wake\u2026', 'mini-btn', openAsleep));
+      m.append(h);
+    }
   } else if (S.tab === 'all') {
     const list = agents().filter(inHost);
     let lastHost = null, i = 0;
@@ -745,6 +754,60 @@ function openGoTo(prefill) {
   openSheet(box);
 }
 
+// ---- wake a PROJECT: start Claude in a terminal that has no agent in it. Pick, then confirm the exact command.
+const agoText = (ts) => {
+  const s = Math.max(0, Math.floor(Date.now() / 1000 - ts));
+  for (const [n, u] of [[2592000, 'month'], [604800, 'week'], [86400, 'day'], [3600, 'hour'], [60, 'minute']]) if (s >= n) { const k = Math.floor(s / n); return k + ' ' + u + (k === 1 ? '' : 's') + ' ago'; }
+  return 'just now';
+};
+function openAsleep() {
+  const box = el('div');
+  box.style.cssText = 'display:flex;flex-direction:column;min-height:0';
+  box.append(el('h3', null, 'Wake a project'),
+             el('div', 'sub', 'Starts Claude or Codex in that project’s terminal. You see the exact command before anything runs.'));
+  let mode = store.get('shepr.wakemode', 'continue') === 'fresh' ? 'fresh' : 'continue';
+  const seg = el('div', 'seg');
+  const bR = btn('Resume last', 'mini-btn', () => setMode('continue')), bN = btn('Start new', 'mini-btn', () => setMode('fresh'));
+  seg.append(bR, bN);
+  const inp = el('input', 'search'); inp.type = 'search'; inp.placeholder = 'Search projects'; inp.autocomplete = 'off'; inp.autocapitalize = 'off'; inp.spellcheck = false;
+  const list = el('div', 'golist');
+  list.append(el('div', 'empty', 'Looking…'));
+  box.append(seg, inp, list);
+  const row = el('div', 'btns'); row.style.marginTop = '8px';
+  row.append(btn('Close', '', closeSheet));
+  box.append(row);
+  let all = [];
+  const multiHost = () => new Set(all.map((i) => i.host)).size > 1;
+  const local = () => (S.hello && S.hello.name);
+  const setMode = (m) => { mode = m; store.set('shepr.wakemode', m); draw(); };
+  const draw = () => {
+    bR.classList.toggle('on', mode === 'continue'); bN.classList.toggle('on', mode === 'fresh');
+    list.textContent = '';
+    const toks = inp.value.toLowerCase().split(/\s+/).filter(Boolean);
+    const hits = all.filter((i) => { const hay = (i.label + ' ' + i.cwd + ' ' + i.host).toLowerCase(); return toks.every((t) => hay.indexOf(t) >= 0); });
+    if (!hits.length) list.append(el('div', 'empty', all.length ? 'Nothing matches.' : 'Nothing is asleep.'));
+    hits.slice(0, 80).forEach((it) => {
+      const r = el('div', 'hrow wake');
+      const meta = el('div', 'meta');
+      const seen = [it.claude ? 'Claude ' + agoText(it.claude) : '', it.codex ? 'Codex ' + agoText(it.codex) : ''].filter(Boolean).join(' · ');
+      meta.append(el('div', 'ttl', it.label + (multiHost() ? '  ' + it.host : '')),
+                  el('div', 'sub', (seen ? seen + ' · ' : '') + it.cwd.replace(/^\/home\/[^/]+/, '~')));
+      r.append(meta);
+      [['claude', 'Claude'], ['codex', 'Codex']].forEach(([agent, name]) => {
+        const b = btn(name, 'mini-btn', () => prepare({ kind: 'start', host: it.host, pane: it.pane, mode, agent }));
+        // Resuming needs something to resume. That is known for this host; for another host it is unknown, so offered.
+        if (mode === 'continue' && it.host === local() && !it[agent]) { b.disabled = true; b.title = 'no ' + name + ' conversation here to resume'; }
+        r.append(b);
+      });
+      list.append(r);
+    });
+  };
+  inp.addEventListener('input', draw);
+  openSheet(box);
+  api('api/asleep').then((r) => { all = r.items || []; draw(); })
+    .catch((e) => { list.textContent = ''; list.append(el('div', 'empty', 'Could not list projects: ' + e.message)); });
+}
+
 // ---- wake: one message to each sleeping session you pick, confirm first
 function openWake() {
   const list = sleeping();
@@ -781,15 +844,15 @@ const HOST_KINDS = ['host_enable', 'host_disable', 'host_add', 'device_revoke'];
 function showPlan(plan) {
   const t = plan.target;
   const isHost = HOST_KINDS.indexOf(plan.kind) >= 0;
-  const isWake = plan.kind === 'wake';
+  const isWake = plan.kind === 'wake', isStart = plan.kind === 'start';
   const box = el('div');
-  box.append(el('h3', null, plan.approves ? 'This approves it. Send?' : isWake ? 'Wake these sessions?' : isHost ? 'Make this change?' : 'Send this?'),
+  box.append(el('h3', null, plan.approves ? 'This approves it. Send?' : isWake ? 'Wake these sessions?' : isStart ? 'Wake this project?' : isHost ? 'Make this change?' : 'Send this?'),
              el('div', 'sub', [t.host, t.title, t.pane].filter(Boolean).join(' · ') + (t.status ? ' · ' + (STATE_LABEL[t.status] || t.status) : '')));
   if (plan.approves) box.append(el('div', 'warnbox', 'The option you picked reads like an approval. Check it is what you mean.'));
   const kv = el('div', 'kv selectable');
   plan.lines.forEach((l) => { kv.append(el('div', 'k', l.k), el('div', 'v', l.v)); });
   box.append(kv);
-  const go = btn(isWake ? 'Wake them' : isHost ? 'Do it' : 'Send', 'go' + (plan.approves ? ' appr' : ''), () => commit(plan, go));
+  const go = btn(isWake ? 'Wake them' : isStart ? 'Start it' : isHost ? 'Do it' : 'Send', 'go' + (plan.approves ? ' appr' : ''), () => commit(plan, go));
   // WHY: the sheet appears under the thumb that just tapped Send in the dock. A short dead time
   // stops a double-tap or a late touch from confirming something nobody has read yet.
   go.disabled = true;
@@ -805,6 +868,11 @@ function commit(plan, goBtn) {
   const sentTo = S.cur ? S.cur.host + '|' + S.cur.pane : null;
   post('api/send/commit', { nonce: plan.nonce }).then((r) => {
     closeSheet();
+    if (plan.kind === 'start') {
+      notify('Starting ' + plan.target.title + '. It appears in the queue in a few seconds.', false);
+      fetchQueue(true); setTimeout(() => fetchQueue(true), 3000); setTimeout(() => fetchQueue(true), 8000);
+      return;
+    }
     if (plan.kind === 'wake') {
       const bits = ['Woke ' + r.woke.length];
       if (r.skipped.length) bits.push(r.skipped.length + ' skipped (they had moved on)');
@@ -833,7 +901,7 @@ function commit(plan, goBtn) {
 
 function prepare(body) {
   if (body.kind === 'text') S.lastText = body.text;
-  const isHost = HOST_KINDS.indexOf(body.kind) >= 0 || body.kind === 'wake';
+  const isHost = HOST_KINDS.indexOf(body.kind) >= 0 || body.kind === 'wake' || body.kind === 'start';
   if (!isHost && !S.cur) return;
   const b = isHost ? body : Object.assign({ host: S.cur.host, pane: S.cur.pane }, body);
   post('api/send/prepare', b).then((p) => { p.kind = p.kind || body.kind; showPlan(p); })
@@ -862,7 +930,8 @@ function openDetail(host, pane, ctx) {
   rec.unshift(k); store.set('shepr.recent', rec.slice(0, 12));
   try { history.replaceState(null, '', '#' + encodeURIComponent(host) + '/' + encodeURIComponent(pane)); } catch (e) { /* ignore */ }
   const d = $('detail');
-  if (d.hidden) { d.hidden = false; } else { d.style.animation = 'none'; void d.offsetWidth; d.style.animation = ''; }
+  if (d.hidden) { d.hidden = false; } else { d.style.animation = 'none'; void d.offsetWidth; d.style.animation = S.slideFrom === 'left' ? 'slideinl .28s cubic-bezier(.2,.9,.3,1)' : ''; }
+  S.slideFrom = null;
   $('tail').textContent = 'reading…';
   $('toast').hidden = true;
   const g = $('gtoast'); if (g) g.hidden = true;   // a toast left over from the list must not cover this session's buttons
@@ -899,14 +968,37 @@ function paintDetailChrome() {
 
 function stepTo(delta, edge) {
   const { l, i } = position();
-  if (!l.length) return;
+  if (!l.length) return false;
   let j;
   if (edge === 'first') j = 0;
   else if (edge === 'last') j = l.length - 1;
   else j = (i >= 0 ? i : (delta > 0 ? S.idx - 1 : S.idx)) + delta;
   j = Math.max(0, Math.min(l.length - 1, j));
-  if (l[j] && keyOf(l[j]) !== S.cur.host + '|' + S.cur.pane) openDetail(l[j].host, l[j].pane);
+  if (l[j] && keyOf(l[j]) !== S.cur.host + '|' + S.cur.pane) { openDetail(l[j].host, l[j].pane); return true; }
+  return false;
 }
+// Swipe left or right anywhere in a session to step to the next or previous open project, in the same order as the
+// arrow buttons. Navigation only: it never sends anything. Starts in the dock or a text box are ignored, as are
+// slow drags, mostly-vertical drags and anything while text is selected.
+(function swipeBetweenSessions() {
+  const d = $('detail');
+  let id = null, x0 = 0, y0 = 0, t0 = 0;
+  d.addEventListener('pointerdown', (e) => {
+    id = null;
+    if (!e.isPrimary || e.pointerType === 'mouse' || S.sheetOpen || e.target.closest('.dock, textarea, input')) return;
+    id = e.pointerId; x0 = e.clientX; y0 = e.clientY; t0 = performance.now();
+  });
+  d.addEventListener('pointercancel', () => { id = null; });
+  d.addEventListener('pointerup', (e) => {
+    if (e.pointerId !== id) return;
+    id = null;
+    const dx = e.clientX - x0, dy = e.clientY - y0;
+    if (performance.now() - t0 > 800 || Math.abs(dx) < 70 || Math.abs(dx) < 2 * Math.abs(dy)) return;
+    if (window.getSelection && String(window.getSelection()).length) return;
+    S.slideFrom = dx < 0 ? 'right' : 'left';   // a left swipe pulls the next one in from the right
+    if (!stepTo(dx < 0 ? 1 : -1)) { S.slideFrom = null; notify(dx < 0 ? 'That is the last open project.' : 'That is the first open project.', false); }
+  });
+})();
 
 function nextWaiting() {
   if (!S.cur) { const w = agents().filter((a) => a.status === 'blocked'); if (w[0]) openDetail(w[0].host, w[0].pane, 'waiting'); return; }

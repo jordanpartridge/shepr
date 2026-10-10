@@ -132,7 +132,8 @@ const browser = await chromium.launch({ executablePath: '/usr/bin/chromium', arg
   // ---- queue order: needs you, then working, then sleeping last
   const secs = await page.$$eval('#main .sec', (n) => n.map((x) => x.textContent.trim().split(' ')[0]));
   console.log('   sections:', secs.join(' > '));
-  check('queue order: Needs you before Working before Sleeping', secs.indexOf('Needs') === 0 && secs.indexOf('Sleeping') === secs.length - 1 && (secs.indexOf('Working') === -1 || secs.indexOf('Working') < secs.indexOf('Sleeping')));
+  const tail = secs.filter((x) => x !== 'Asleep');   // the Asleep row (projects with no agent) always comes last of all
+  check('queue order: Needs you before Working before Sleeping, then Asleep', secs.indexOf('Needs') === 0 && tail.indexOf('Sleeping') === tail.length - 1 && (tail.indexOf('Working') === -1 || tail.indexOf('Working') < tail.indexOf('Sleeping')) && (secs.indexOf('Asleep') === -1 || secs.indexOf('Asleep') === secs.length - 1));
   const statuses = await page.$$eval('#main .item', (n) => n.map((x) => x.classList.contains('blocked') ? 'b' : x.classList.contains('working') ? 'w' : 'i').join(''));
   check('rows are ordered blocked, then working, then sleeping', /^b+w*i*$/.test(statuses));
 
@@ -466,6 +467,111 @@ const browser = await chromium.launch({ executablePath: '/usr/bin/chromium', arg
     await cdp.send('Input.synthesizePinchGesture', { x: 195, y: 300, scaleFactor: 2.5, relativeSpeed: 600, gestureSourceType: 'touch' }).catch(() => {});
     await page.waitForTimeout(300);
     check('zoom: a real synthesized pinch leaves the page at scale 1', (await page.evaluate(() => window.visualViewport.scale)) === 1);
+  }
+
+  // ---- wake a PROJECT: a terminal with no agent in it (needs the server started with SHEPR_CLAUDE_CMD="echo STARTED")
+  {
+    const fsh = new URL('./fake-session.sh', import.meta.url).pathname;
+    execFileSync('bash', [fsh, 'asleep'], { env: ENV, encoding: 'utf8' });
+    const hr = (...a) => execFileSync('herdr', a, { env: ENV, encoding: 'utf8', input: '' });
+    const paneOf = (cwd) => JSON.parse(hr('pane', 'list')).result.panes.find((p) => p.cwd === cwd).pane_id;
+    const herdrRead = (pane) => hr('pane', 'read', pane, '--lines', '30');
+    await tap(page, '.tab[data-view=waiting]'); await page.waitForTimeout(300);
+    await page.waitForFunction(() => (window.shepr.S.q.hosts || []).some((h) => h.asleep >= 2), null, { timeout: 15000 }).catch(async () => { await page.click('#refresh'); await page.waitForTimeout(4000); });
+    await page.waitForSelector('#asleeprow .mini-btn', { timeout: 8000 });
+    check('asleep: the queue has one "Asleep (N)" row with a Wake button, not a row per project', /Asleep/.test(await page.textContent('#asleeprow')) && (await page.$$('#main .item')).length < 12);
+    await page.screenshot({ path: `${OUT}/a1-asleep-row.png` });
+    await page.click('#asleeprow .mini-btn');
+    await page.waitForSelector('#sheet:not([hidden]) .hrow', { timeout: 8000 }).catch(async (e) => { console.log('   picker sheet text:', JSON.stringify((await page.textContent('#sheet')).slice(0, 200))); throw e; });
+    const rows = await page.$$eval('#sheet .hrow', (n) => n.map((x) => x.textContent));
+    console.log('   asleep list:', JSON.stringify(rows.map((r) => r.slice(0, 60))));
+    const iD = rows.findIndex((r) => r.includes('dormant')), iB = rows.findIndex((r) => r.includes('busy'));
+    check('asleep: lists the projects with no agent, the one with a conversation before the one without', iD >= 0 && iB >= 0 && iD < iB);
+    await page.screenshot({ path: `${OUT}/a2-asleep-picker.png` });
+    await page.fill('#sheet .search', 'dorm'); await page.waitForTimeout(250);
+    check('asleep: search narrows the list', (await page.$$('#sheet .hrow')).length === 1);
+    check('asleep: every project can be woken with Claude or Codex', (await page.$$eval('#sheet .hrow button', (b) => b.map((x) => x.textContent))).join() === 'Claude,Codex');
+    check('asleep: Resume last is the default', (await page.$$eval('#sheet .seg .on', (b) => b.map((x) => x.textContent))).join() === 'Resume last');
+    await page.click('#sheet .hrow button:first-of-type');
+    await page.waitForSelector('#sheet:not([hidden]) .kv', { timeout: 8000 });
+    const kv = await page.textContent('#sheet .kv');
+    console.log('   start plan:', kv.replace(/\s+/g, ' ').trim().slice(0, 200));
+    check('asleep: the confirm sheet shows the exact command, the directory and what it resumes', /Claude: echo STARTED --continue/.test(kv) && /\/tmp\/shepr-dormant/.test(kv) && /Resumes/.test(kv));
+    await page.screenshot({ path: `${OUT}/a3-asleep-confirm.png` });
+    check('asleep: nothing has run yet', !herdrRead(paneOf('/tmp/shepr-dormant')).includes('STARTED'));
+    await page.waitForTimeout(800);
+    await page.click('#sheet .btns .go');
+    await page.waitForFunction(() => document.querySelector('#toast, .toast') && /Starting dormant/.test(document.body.textContent), null, { timeout: 8000 });
+    const paneId = paneOf('/tmp/shepr-dormant');
+    let seen = '';
+    for (let i = 0; i < 10 && !seen.includes('STARTED --continue'); i++) { await page.waitForTimeout(500); seen = herdrRead(paneId); }
+    check('asleep: after confirming, the command ran in that terminal', seen.includes('STARTED --continue'));
+    // Codex: resume the last Codex session, or start a new one, from the same picker
+    await page.waitForTimeout(600);
+    await page.click('#asleeprow .mini-btn'); await page.waitForSelector('#sheet:not([hidden]) .hrow'); await page.fill('#sheet .search', 'busy'); await page.waitForTimeout(250);
+    check('asleep: Resume is disabled where there is nothing to resume (and Start new enables it)', (await page.$$eval('#sheet .hrow button', (b) => b.map((x) => x.disabled))).every(Boolean));
+    await page.click('#sheet .seg .mini-btn:last-child'); await page.waitForTimeout(200);
+    check('asleep: Start new enables both agents', (await page.$$eval('#sheet .hrow button', (b) => b.map((x) => x.disabled))).every((d) => !d));
+    await page.fill('#sheet .search', 'dorm'); await page.click('#sheet .seg .mini-btn:first-child'); await page.waitForTimeout(200);
+    await page.click('#sheet .hrow button:nth-of-type(2)');
+    await page.waitForSelector('#sheet:not([hidden]) .kv');
+    const kv2 = await page.textContent('#sheet .kv');
+    check('asleep: Codex resumes the last Codex session in that directory', /Codex: echo CODEX resume --last/.test(kv2) && /Resumes/.test(kv2) && /Codex conversation/.test(kv2));
+    await page.waitForTimeout(800); await page.click('#sheet .btns .go');
+    let seen2 = '';
+    for (let i = 0; i < 10 && !seen2.includes('CODEX resume --last'); i++) { await page.waitForTimeout(500); seen2 = herdrRead(paneId); }
+    check('asleep: after confirming, the Codex command ran in that terminal', seen2.includes('CODEX resume --last'));
+    // a terminal that is busy (not a shell prompt) must be refused, even though it has no agent
+    const busy = await page.evaluate(async () => {
+      const sign = (m, p, b) => window.shepr.signHeaders(m, p, b);
+      const a = await (await fetch('api/asleep', { headers: await sign('GET', 'api/asleep', '') })).json();
+      const it = a.items.find((x) => x.label === 'busy');
+      const body = JSON.stringify({ host: it.host, pane: it.pane, kind: 'start', mode: 'fresh', agent: 'codex' });
+      const r = await fetch('api/send/prepare', { method: 'POST', body, headers: Object.assign({ 'Content-Type': 'application/json', 'X-Shepr': '1' }, await sign('POST', 'api/send/prepare', body)) });
+      return r.status + ' ' + (await r.text());
+    });
+    console.log('   busy terminal:', busy.slice(0, 170));
+    check('asleep: a terminal running something else is refused, with the reason', /not_idle_shell/.test(busy) && /sleep/.test(busy) && !/^2/.test(busy));
+    check('asleep: and so is a pane that is not asleep at all (an agent is in it)', await page.evaluate(async () => {
+      const sign = (m, p, b) => window.shepr.signHeaders(m, p, b);
+      const ag = window.shepr.S.q.agents[0];
+      const body = JSON.stringify({ host: ag.host, pane: ag.pane, kind: 'start', mode: 'fresh' });
+      const r = await fetch('api/send/prepare', { method: 'POST', body, headers: Object.assign({ 'Content-Type': 'application/json', 'X-Shepr': '1' }, await sign('POST', 'api/send/prepare', body)) });
+      return !r.ok && /not_asleep|already running/.test(await r.text()); }));
+    execFileSync('bash', [fsh, 'asleep-rm'], { env: ENV, encoding: 'utf8' });
+  }
+
+  // ---- swipe left / right in a session to move to the next / previous open project
+  {
+    await tap(page, '.tab[data-view=waiting]'); await page.waitForTimeout(400);
+    const first = await page.evaluate(() => { const l = [...document.querySelectorAll('#main .item')][0]; return l.dataset.key; });
+    await tap(page, `.item[data-key="${first}"]`);
+    await page.waitForSelector('#detail:not([hidden])'); await page.waitForTimeout(600);
+    const who = () => page.textContent('#dtitle');
+    const swipe = (x0, y0, x1, y1, ms = 160, from = null) => page.evaluate(({ x0, y0, x1, y1, ms, from }) => new Promise((res) => {
+      const tgt = from ? document.querySelector(from) : document.elementFromPoint(x0, y0);
+      const ev = (type, x, y) => tgt.dispatchEvent(new PointerEvent(type, { pointerId: 7, pointerType: 'touch', isPrimary: true, clientX: x, clientY: y, bubbles: true, cancelable: true }));
+      ev('pointerdown', x0, y0); setTimeout(() => { ev('pointermove', (x0 + x1) / 2, (y0 + y1) / 2); ev('pointerup', x1, y1); res(); }, ms);
+    }), { x0, y0, x1, y1, ms, from });
+    const t0 = await who();
+    await swipe(300, 300, 80, 305);
+    await page.waitForTimeout(500);
+    const t1 = await who();
+    check('swipe: a left swipe in a session goes to the next open project', t1 !== t0);
+    await swipe(80, 300, 300, 295); await page.waitForTimeout(500);
+    check('swipe: a right swipe comes back to the previous one', (await who()) === t0);
+    await swipe(300, 300, 250, 302); await page.waitForTimeout(400);
+    check('swipe: a short swipe does nothing', (await who()) === t0);
+    await swipe(200, 200, 150, 480); await page.waitForTimeout(400);
+    check('swipe: a mostly-vertical drag does nothing (it is scrolling)', (await who()) === t0);
+    await swipe(300, 300, 80, 305, 1100); await page.waitForTimeout(400);
+    check('swipe: a slow drag does nothing', (await who()) === t0);
+    await swipe(300, 1500, 80, 1500, 160, '#msg'); await page.waitForTimeout(400);
+    check('swipe: a swipe that starts in the message box does nothing', (await who()) === t0);
+    await swipe(300, 300, 80, 305); await swipe(300, 300, 80, 305); await swipe(300, 300, 80, 305);
+    for (let i = 0; i < 8; i++) { await swipe(300, 300, 80, 305); await page.waitForTimeout(250); }
+    check('swipe: at the last project it stops and says so', /last open project/.test(await page.textContent('body')));
+    await page.click('#dback').catch(() => {}); await page.waitForTimeout(400);
   }
 
   // ---- revocation signs the phone out
