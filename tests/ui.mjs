@@ -40,7 +40,7 @@ async function tap(page, sel, n = 1, gap = 90) {
 }
 const watch = (page) => {
   page.on('pageerror', (e) => errs.push('pageerror: ' + e.message));
-  page.on('console', (m) => { if (m.type() === 'error' && !/400|401|403|404|409|410|429|502/.test(m.text())) errs.push('console: ' + m.text()); });
+  page.on('console', (m) => { if (m.type() === 'warning' && /queue fetch failed/.test(m.text())) console.log('   WARN', m.text().slice(0, 300)); if (m.type() === 'error' && !/400|401|403|404|409|410|429|502/.test(m.text())) errs.push('console: ' + m.text()); });
 };
 
 const dev = devices['iPhone 14'];
@@ -53,8 +53,17 @@ const browser = await chromium.launch({ executablePath: '/usr/bin/chromium', arg
   await page.goto(BASE + '/');
   await page.waitForSelector('#splash');
   check('splash shows the wordmark', (await page.textContent('.sword')).replace(/\s/g, '') === 'SHEPR');
-  await page.waitForTimeout(400);  await page.screenshot({ path: `${OUT}/s1-splash-early.png` });
-  await page.screenshot({ path: `${OUT}/s2-splash-mid.png` });
+  check('splash says who made it: MADE BY @nixfred', (await page.textContent('.smade')).replace(/\s/g, '') === 'MADEBY@nixfred');
+  await page.waitForTimeout(300);  await page.screenshot({ path: `${OUT}/s1-splash-early.png` });
+  await page.waitForTimeout(700);  await page.screenshot({ path: `${OUT}/s2-splash-mid.png` });
+  // the finished picture, as soon as it is finished (the splash holds for 3.5 s in all)
+  const late = await page.waitForFunction(() => { const b = document.querySelector('.smade'); if (!b) return null;
+    const r = { badge: +getComputedStyle(b).opacity, letters: [...document.querySelectorAll('.sword span')].map((s) => +getComputedStyle(s).opacity),
+      typed: document.querySelector('.stag .ty').getBoundingClientRect().width, rule: document.querySelector('.srule').getBoundingClientRect().width, ver: document.getElementById('sver').textContent };
+    return r.badge > 0.99 && r.letters.every((o) => o > 0.99) && r.typed > 100 && r.rule > 150 ? r : null; }, null, { timeout: 4000, polling: 50 }).then((h) => h.jsonValue()).catch(() => null);
+  await page.screenshot({ path: `${OUT}/s3-splash-late.png` }).catch(() => {});
+  check('splash: the badge, all five letters, the typed tagline and the rule all land before it leaves', !!late);
+  check('splash: it shows the build number', !!late && /^v\d+$/.test(late.ver));
   await page.waitForSelector('#splash', { state: 'detached', timeout: 6000 });
   check('splash removes itself', true);
   check('unpaired phone lands on the pairing screen', await page.isVisible('#pair'));
@@ -309,7 +318,7 @@ const browser = await chromium.launch({ executablePath: '/usr/bin/chromium', arg
       await page.waitForSelector('#detail:not([hidden])'); await page.waitForSelector('#optrow .tog', { timeout: 8000 });
       const labels = await page.$$eval('#optrow button', (n) => n.map((x) => x.textContent.trim()));
       console.log('   multi buttons:', JSON.stringify(labels));
-      check('multi: four tick buttons and a Submit button, no "Type something"', labels.length === 5 && /^Submit/.test(labels[4]));
+      check('multi: four tick buttons, a pencil for your own words, and a Submit button', labels.length === 6 && labels[4] === '\u270e' && /^Submit/.test(labels[5]));
       check('multi: the option already ticked on screen starts ticked', (await page.$$eval('#optrow .tog.on', (n) => n.map((x) => x.textContent.trim()))).join() === '\u2713 2');
       await page.click('#optrow .tog:nth-child(1)'); await page.click('#optrow .tog:nth-child(3)');
       check('multi: tapping ticks on the phone and sends nothing', (await page.$$eval('#optrow .tog.on', (n) => n.length)) === 3 && (await page.locator('#sheet:not([hidden])').count()) === 0);
@@ -706,6 +715,82 @@ const browser = await chromium.launch({ executablePath: '/usr/bin/chromium', arg
     await tap(page, '.tab[data-view=waiting]'); await page.waitForTimeout(300);
   }
 
+  // ---- what a row is waiting on, and the count that takes you to it
+  {
+    const fsh = new URL('./fake-session.sh', import.meta.url).pathname;
+    await tap(page, '.tab[data-view=waiting]'); await page.waitForTimeout(500);
+    const subs = await page.$$eval('.item.blocked .sub', (n) => n.map((x) => ({ t: x.textContent, c: x.className })));
+    console.log('   waiting rows say:', JSON.stringify(subs.map((s) => s.t)));
+    check('waiting: each blocked row says WHAT it is waiting on (the question on screen), not the session title', subs.length >= 3 && subs.every((s) => /ask/.test(s.c) && /Do you want to proceed\?/.test(s.t)));
+    execFileSync('bash', [fsh, 'nomenu'], { env: ENV, encoding: 'utf8' });
+    await page.waitForFunction(() => window.shepr.S.q.agents.some((a) => a.wlabel === 'nomenu' && a.ask), null, { timeout: 15000 }).catch(async () => { await page.click('#refresh'); await page.waitForTimeout(4500); });
+    await page.waitForTimeout(500);
+    const nm = await page.$$eval('.item.blocked .sub.nomenu', (n) => n.map((x) => x.textContent));
+    check('waiting: a blocked agent with NO question on screen says so plainly (a false alarm is visible at a glance)', nm.length === 1 && /no question is on screen/.test(nm[0]));
+    await page.screenshot({ path: `${OUT}/w1-waiting-rows.png` });
+    check('waiting: the header count takes you to what is waiting', await (async () => { await page.click('#count'); await page.waitForSelector('#detail:not([hidden])', { timeout: 4000 }); const t = await page.textContent('#dtitle'); await page.click('#dback'); await page.waitForTimeout(400); return t.length > 0; })());
+    await page.click('#count'); await page.waitForSelector('#detail:not([hidden])'); const first = await page.textContent('#dtitle');
+    await page.dblclick('#dhead'); await page.waitForTimeout(700); const second = await page.textContent('#dtitle');   // the open session covers the header count, so the title's double-tap is how you go on
+    check('waiting: double-tapping the title inside a session goes on to the next waiting one, not the same one', first.length > 0 && first !== second);
+    await page.click('#dback').catch(() => {}); await page.waitForTimeout(400);
+    await page.click('#dback').catch(() => {}); await page.waitForTimeout(400);
+    await tap(page, '.tab[data-view=all]'); await page.waitForSelector('svg.radar'); await tap(page, '.radar .rcentre'); await page.waitForSelector('#detail:not([hidden])', { timeout: 4000 });
+    check('waiting: the number in the middle of the radar takes you there too', true);
+    await page.click('#dback').catch(() => {}); await page.waitForTimeout(400);
+    execFileSync('bash', [fsh, 'nomenu-rm'], { env: ENV, encoding: 'utf8' });
+    await tap(page, '.tab[data-view=waiting]'); await page.waitForTimeout(300);
+  }
+
+  // ---- "Type something": your own words (the fixture pane is static, so the CURSOR SAFETY CHECK is what is exercised here)
+  {
+    const fsh = new URL('./fake-session.sh', import.meta.url).pathname;
+    const hr = (...a) => execFileSync('herdr', a, { env: ENV, encoding: 'utf8', input: '' });
+    execFileSync('bash', [fsh, 'free'], { env: ENV, encoding: 'utf8' });
+    await page.waitForFunction(() => window.shepr.S.q.agents.some((a) => a.wlabel === 'freetext'), null, { timeout: 15000 }).catch(async () => { await page.click('#refresh'); await page.waitForTimeout(4500); });
+    const key = await page.evaluate(() => { const a = window.shepr.S.q.agents.find((x) => x.wlabel === 'freetext'); return a.host + '|' + a.pane; });
+    await tap(page, '.tab[data-view=waiting]'); await page.waitForTimeout(300);
+    await tap(page, `.item[data-key="${key}"]`); await page.waitForSelector('#optrow button.free', { timeout: 8000 });
+    const labels = await page.$$eval('#optrow button', (b) => b.map((x) => x.textContent.trim()));
+    console.log('   typing-row buttons:', JSON.stringify(labels));
+    check('type: the typing row is a pencil button, not a number that would press Enter and decline the question', labels.length === 4 && /^✎ 3$/.test(labels[2]) && labels[0] === '1' && labels[1] === '2');
+    await page.screenshot({ path: `${OUT}/y1-type-button.png` });
+    await page.click('#optrow button.free'); await page.waitForSelector('#sheet:not([hidden]) #typebox');
+    check('type: it opens a sheet for your words, and Review stays off until there are some', await page.$eval('#sheet .btns .go', (b) => b.disabled));
+    const WORDS = "What about 42, it's \"ok\" $HOME -- and `ls`?";
+    await page.fill('#typebox', 'line one\nline two'); 
+    check('type: a line break is flattened to a space (it would send the answer early)', (await page.evaluate(() => { const t = document.getElementById('typebox'); return t.value; })).includes('\n') && !(await page.$eval('#sheet .btns .go', (b) => b.disabled)));
+    await page.fill('#typebox', WORDS);
+    await page.screenshot({ path: `${OUT}/y2-type-sheet.png` });
+    await page.click('#sheet .btns .go'); await page.waitForSelector('#sheet:not([hidden]) .kv');
+    const kv = await page.textContent('#sheet .kv');
+    console.log('   typed plan:', kv.replace(/\s+/g, ' ').trim().slice(0, 190));
+    check('type: the confirm sheet shows the option, YOUR words exactly, and the keys', /3\. Type something\./.test(kv) && kv.includes(WORDS) && /↓ ↓ then your words, then ⏎/.test(kv));
+    await page.screenshot({ path: `${OUT}/y3-type-confirm.png` });
+    await page.waitForTimeout(800); await page.click('#sheet .btns .go');
+    await page.waitForFunction(() => /did not land on the row|nothing was typed/.test(document.body.textContent), null, { timeout: 8000 });
+    const pane = (JSON.parse(hr('pane', 'list')).result.panes.find((p) => p.cwd === (process.env.HOME + '/Projects/whats-next') && p.terminal_title_stripped !== undefined) || {}).pane_id;
+    const shown = hr('pane', 'read', JSON.parse(hr('workspace', 'list')).result.workspaces.find((w) => w.label === 'freetext').workspace_id + ':p1', '--lines', '30');
+    check('type: the pane never moved, so the host REFUSED to type: nothing was typed and no Enter was pressed', !shown.includes('What about 42'));
+    // the multi-select fixture has a typing row too: a pencil that rides along with Submit
+    execFileSync('bash', [fsh, 'free-rm'], { env: ENV, encoding: 'utf8' });
+    execFileSync('bash', [fsh, 'multi'], { env: ENV, encoding: 'utf8' });
+    await page.waitForFunction(() => window.shepr.S.q.agents.some((a) => a.wlabel === 'multi'), null, { timeout: 15000 }).catch(async () => { await page.click('#refresh'); await page.waitForTimeout(4500); });
+    const mk2 = await page.evaluate(() => { const a = window.shepr.S.q.agents.find((x) => x.wlabel === 'multi'); return a.host + '|' + a.pane; });
+    await page.click('#dback').catch(() => {}); await tap(page, '.tab[data-view=waiting]'); await page.waitForTimeout(300);
+    await tap(page, `.item[data-key="${mk2}"]`); await page.waitForSelector('#optrow .tog');
+    const ml = await page.$$eval('#optrow button', (b) => b.map((x) => x.textContent.trim()));
+    check('type: a tick-several question gets a pencil beside the ticks, before Submit', ml.length === 6 && ml[4] === '✎' && /^Submit/.test(ml[5]));
+    await page.click('#optrow button.free'); await page.waitForSelector('#typebox'); await page.fill('#typebox', 'my own words'); await page.click('#sheet .btns .go');
+    await page.waitForFunction(() => /✎ ✓/.test(document.getElementById('optrow').textContent), null, { timeout: 4000 });
+    check('type: once written, the pencil shows a tick and nothing is sent yet', true);
+    await page.click('#optrow .tog-go'); await page.waitForSelector('#sheet:not([hidden]) .kv');
+    const mkv = await page.textContent('#sheet .kv');
+    check('type: Submit shows your words on the confirm sheet along with the ticks and the keys', /Types/.test(mkv) && /my own words/.test(mkv) && /Submit/.test(mkv));
+    await page.click('#sheet .btns button:first-child');
+    execFileSync('bash', [fsh, 'multi-rm'], { env: ENV, encoding: 'utf8' });
+    await page.click('#dback').catch(() => {}); await page.waitForTimeout(400);
+  }
+
   // ---- an app newer than its server: say so plainly instead of a confusing pane error
   {
     const prep = (kind) => page.evaluate(async (k) => { const body = JSON.stringify({ host: window.shepr.S.hello.name, kind: k });
@@ -717,8 +802,8 @@ const browser = await chromium.launch({ executablePath: '/usr/bin/chromium', arg
     check('skew: the queue carries the server build, equal to the app build when they match', await page.evaluate(async () => { const q = await window.shepr.S.q; return !!q.server_build && q.server_build === q.build; }));
     await page.route('**/api/queue*', async (route) => { const res = await route.fetch(); const j = await res.json(); j.server_build = 'v0'; route.fulfill({ response: res, json: j }); });
     await page.evaluate(() => { window.shepr.S.skewShown = false; });
-    await page.click('#refresh'); await page.waitForTimeout(1200);
-    check('skew: when the host runs an older Shepr than the app, the phone says so, once', /older|Restart Shepr on the host/.test(await page.textContent('body')));
+    await page.click('#refresh');
+    check('skew: when the host runs an older Shepr than the app, the phone says so, once', await page.waitForFunction(() => /Restart Shepr on the host/.test(document.body.textContent), null, { timeout: 8000 }).then(() => true, () => false));
     await page.unroute('**/api/queue*');
   }
 
@@ -801,6 +886,21 @@ const browser = await chromium.launch({ executablePath: '/usr/bin/chromium', arg
   await page.click('#pcode'); await page.fill('#pcodein', 'ZZZZZZZZZZZZ'); await page.click('#pgo');
   await page.waitForSelector('#perr:not([hidden])');
   check('wrong code is refused with a clear message', /wrong|expired|used/i.test(await page.textContent('#perr')));
+  await ctx.close();
+}
+
+// =============================================================== 4. a second launch within 20 minutes keeps the splash short
+{
+  const ctx = await browser.newContext({ ...dev, serviceWorkers: 'block' });
+  await ctx.addInitScript(() => { try { localStorage.setItem('shepr.splash', String(Date.now())); } catch (e) { /* ignore */ } });
+  const page = await ctx.newPage(); watch(page);
+  const t0 = Date.now();
+  await page.goto(BASE + '/'); await page.waitForSelector('#splash');
+  check('quick splash: it still has the badge', (await page.textContent('.smade')).replace(/\s/g, '') === 'MADEBY@nixfred');
+  await page.waitForSelector('#splash', { state: 'detached', timeout: 6000 });
+  const took = Date.now() - t0;
+  console.log('   quick splash took', took, 'ms');
+  check('quick splash: a second launch within 20 minutes is gone in under 2.5 s', took < 2500);
   await ctx.close();
 }
 

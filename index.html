@@ -143,20 +143,31 @@
     </div>
   </section>
 
-  <!-- Splash: the logo draws itself, the agents gather into the pen, the name arrives. Tap to skip. -->
+  <!-- Splash: a boot sequence. A grid rises, the logo draws itself and bursts, the agents gather, SHEPR slams in, the tagline
+       types, and the maker's badge lands. Tap to skip. -->
   <div class="splash" id="splash" aria-hidden="true">
+    <div class="sgrid"></div>
     <div class="sweep"></div>
-    <svg class="smark" viewBox="0 0 200 200">
-      <polygon class="sring" points="100,14 174.7,57 174.7,143 100,186 25.3,143 25.3,57"/>
-      <path class="scrook" d="M121 158 L121 76 C121 42 80 40 75 68"/>
-      <circle class="sd d1" cx="58" cy="132" r="8"/>
-      <circle class="sd d2" cx="82" cy="150" r="6.2"/>
-      <circle class="sd d3" cx="47" cy="106" r="5.6"/>
-      <circle class="sd d4 g" cx="72" cy="112" r="5"/>
-      <circle class="sd d5" cx="92" cy="130" r="4.4"/>
-    </svg>
+    <div class="sscan"></div>
+    <i class="hud tl"></i><i class="hud tr"></i><i class="hud bl"></i><i class="hud br"></i>
+    <div class="sstage">
+      <div class="swave w1"></div><div class="swave w2"></div>
+      <svg class="smark" viewBox="0 0 200 200">
+        <polygon class="sring" points="100,14 174.7,57 174.7,143 100,186 25.3,143 25.3,57"/>
+        <path class="scrook" d="M121 158 L121 76 C121 42 80 40 75 68"/>
+        <circle class="sd d1" cx="58" cy="132" r="8"/>
+        <circle class="sd d2" cx="82" cy="150" r="6.2"/>
+        <circle class="sd d3" cx="47" cy="106" r="5.6"/>
+        <circle class="sd d4 g" cx="72" cy="112" r="5"/>
+        <circle class="sd d5" cx="92" cy="130" r="4.4"/>
+      </svg>
+    </div>
     <div class="sword"><span>S</span><span>H</span><span>E</span><span>P</span><span>R</span></div>
-    <div class="stag">herd your agents</div>
+    <div class="srule"></div>
+    <div class="stag"><span class="ty">herd your agents</span><i class="caret"></i></div>
+    <div class="smade"><span class="by">MADE BY</span><b class="who">@nixfred</b></div>
+    <div class="sver" id="sver"></div>
+    <div class="sflash"></div>
   </div>
 </div>
 

@@ -8,7 +8,7 @@
      3. No timer, retry or "auto" anything ever sends. A failed send is reported, never repeated.
      4. The private key never leaves the phone: it is generated non-extractable and only signs. */
 'use strict';
-const BUILD = 'v25';   // keep equal to sw.js VERSION: shown in Keys and logged by the host, so you can see which app a phone is running
+const BUILD = 'v27';   // keep equal to sw.js VERSION: shown in Keys and logged by the host, so you can see which app a phone is running
 
 // ---------------------------------------------------------------------------
 // 1. Service worker. Without this, a dead tailnet shows Safari's error page and
@@ -287,7 +287,7 @@ function fetchQueue(fresh) {
       S.skewShown = true;
       notify('This host is running Shepr ' + q.server_build + ' but the app is ' + q.build + '. Restart Shepr on the host, or newer buttons will fail.', true);
     }
-  }).catch((e) => { if (!e.status) setOnline(false); })
+  }).catch((e) => { console.warn('queue fetch failed:', e && e.message, e && e.stack && e.stack.split('\n').slice(0, 3).join(' | ')); if (!e.status) setOnline(false); })
     .finally(() => { fetching = false; setTimeout(() => $('mini').classList.remove('busy'), 400); });
 }
 const agents = () => (S.q ? S.q.agents : []);
@@ -384,11 +384,18 @@ function itemNode(a, ctx, compact, idx) {
   const m = el('div', 'meta');
   const t = el('div', 'ttl', label(a));
   if (S.q && S.q.hosts.length > 1) t.append(el('span', 'htag', a.host));
-  m.append(t, el('div', 'sub', a.title));
+  let sub = el('div', 'sub', a.title);
+  if (a.status === 'blocked' && a.ask) {   // say WHAT it is waiting on, so a wrong "waiting" is obvious at a glance
+    sub = a.ask.menu && a.ask.q ? el('div', 'sub ask', a.ask.q + (a.ask.n > 1 ? '  \u00b7  ' + a.ask.n + ' options' : ''))
+                                : el('div', 'sub nomenu', 'Blocked, but no question is on screen. Open it to look.');
+  }
+  m.append(t, sub);
   n.append(m, el('div', 'chev', '›'));
   gesture(n, { tap: () => openDetail(a.host, a.pane, ctx), long: () => openPeek(a, ctx) });
   return n;
 }
+
+gesture($('count'), { tap: () => nextWaiting() });
 
 function render() {
   const q = S.q;
@@ -396,6 +403,7 @@ function render() {
   const totalWaiting = agents().filter((a) => a.status === 'blocked').length;
   const c = $('count');
   c.hidden = false; c.textContent = totalWaiting; c.classList.toggle('none', totalWaiting === 0);
+  c.setAttribute('aria-label', totalWaiting ? 'Open what is waiting on you (' + totalWaiting + ')' : 'Nothing is waiting on you');
   const b = $('badge');
   if (b) {
     const was = b.textContent;
@@ -561,6 +569,10 @@ function radarNode(list) {
     });
   });
   const waiting = list.filter((a) => a.status === 'blocked').length;
+  const centre = mk('g', { class: 'rcentre', role: 'button', tabindex: '0', 'aria-label': 'Open what is waiting on you' });
+  centre.append(mk('circle', { cx: RAD.cx, cy: RAD.cy, r: 38, class: 'rhit' }));
+  gesture(centre, { tap: () => nextWaiting() });
+  svg.append(centre);
   svg.append(mk('text', { x: RAD.cx, y: RAD.cy + 8, class: 'rnum' + (waiting ? ' hot' : ''), 'text-anchor': 'middle' }, String(waiting)));
   svg.append(mk('text', { x: RAD.cx, y: RAD.cy + 26, class: 'rcap', 'text-anchor': 'middle' }, waiting === 1 ? 'WAITING' : 'WAITING'));
   wrap.append(svg);
@@ -1097,7 +1109,7 @@ function commit(plan, goBtn) {
       notify('Done.', false); loadHosts(); fetchQueue(true);
       return;
     }
-    S.selSig = null;   // the next tick-several question starts from what is on screen
+    S.selSig = null; S.freeText = '';   // the next tick-several question starts from what is on screen
     // The answer can arrive after you moved to another session: only clear the draft of the one it was for.
     if (S.cur && S.cur.host + '|' + S.cur.pane === sentTo) { S.keybuf = []; paintStage(); $('msg').value = ''; autosize(); }
     if (plan.kind === 'text') noteSlashUse(plan.target.host, S.lastText);
@@ -1213,7 +1225,7 @@ function stepTo(delta, edge) {
 })();
 
 function nextWaiting() {
-  if (!S.cur) { const w = agents().filter((a) => a.status === 'blocked'); if (w[0]) openDetail(w[0].host, w[0].pane, 'waiting'); return; }
+  if (!S.cur) { const w = agents().filter((a) => a.status === 'blocked'); if (w[0]) openDetail(w[0].host, w[0].pane, 'waiting'); else notify('Nothing is waiting on you.', false); return; }
   const cur = S.cur.host + '|' + S.cur.pane;
   const w = agents().filter((a) => a.status === 'blocked' && keyOf(a) !== cur);
   if (!w.length) { notify('Nothing else is waiting on you.', false); return; }
@@ -1514,8 +1526,11 @@ function paintDock() {
   if (!opt.hidden) {
     if (m.multi) paintMulti(opt, m);
     else m.options.forEach((o) => {
-      const b = btn(String(o.n), (o.n === m.current ? 'cur ' : '') + (o.approves ? 'appr' : ''), () => prepare({ kind: 'choose', option: o.n }));
-      b.setAttribute('aria-label', 'Pick option ' + o.n + ': ' + o.label);
+      // "Type something" is a text field: pressing Enter on it with nothing typed DECLINES the question, so it is never a plain pick.
+      const b = o.free
+        ? btn('\u270e ' + o.n, (o.n === m.current ? 'cur ' : '') + 'free', () => openTypeSheet({ title: 'Type your own answer', sub: o.n + '. ' + o.label + ' (your words go into that row, then Enter)', cta: 'Review', onDone: (text) => prepare({ kind: 'choose', option: o.n, text }) }))
+        : btn(String(o.n), (o.n === m.current ? 'cur ' : '') + (o.approves ? 'appr' : ''), () => prepare({ kind: 'choose', option: o.n }));
+      b.setAttribute('aria-label', o.free ? 'Type your own answer' : 'Pick option ' + o.n + ': ' + o.label);
       opt.append(b);
     });
   }
@@ -1537,7 +1552,7 @@ function paintDock() {
 function paintMulti(opt, m) {
   const tog = m.options.filter((o) => o.checked !== null && !o.free && o.n <= 9);
   const sig = JSON.stringify([S.agent && S.agent.seq, m.options.map((o) => [o.n, o.label, o.checked])]);
-  if (S.selSig !== sig) { S.selSig = sig; S.sel = new Set(tog.filter((o) => o.checked).map((o) => o.n)); }
+  if (S.selSig !== sig) { S.selSig = sig; S.freeText = ''; S.sel = new Set(tog.filter((o) => o.checked).map((o) => o.n)); }
   tog.forEach((o) => {
     const on = S.sel.has(o.n);
     const b = btn((on ? '\u2713 ' : '') + o.n, 'tog' + (on ? ' on' : ''), () => {
@@ -1548,9 +1563,32 @@ function paintMulti(opt, m) {
     b.setAttribute('aria-label', (on ? 'Ticked' : 'Not ticked') + ', option ' + o.n + ': ' + o.label);
     opt.append(b);
   });
-  const go = btn(m.action.label + '\u2026', 'tog-go', () => prepare({ kind: 'multi', picks: Array.from(S.sel).sort((a, b) => a - b), advance: true }));
+  const free = m.options.find((o) => o.free);
+  if (free) {
+    const fb = btn(S.freeText ? '\u270e \u2713' : '\u270e', 'tog free' + (S.freeText ? ' on' : ''), () => openTypeSheet({ title: 'Type your own answer', sub: 'It is typed into the "' + free.label + '" row, which ticks it. Nothing is sent until you press ' + m.action.label + '.', initial: S.freeText, cta: 'Done',
+      onDone: (text) => { S.freeText = text; closeSheet(); paintDock(); notify('Your words will be typed when you press ' + m.action.label + '.', false); } }));
+    fb.setAttribute('aria-label', 'Type your own answer' + (S.freeText ? ' (written)' : ''));
+    opt.append(fb);
+  }
+  const go = btn(m.action.label + '\u2026', 'tog-go', () => prepare({ kind: 'multi', picks: Array.from(S.sel).sort((a, b) => a - b), advance: true, text: S.freeText || undefined }));
   go.setAttribute('aria-label', m.action.label + ' with ' + S.sel.size + ' ticked');
   opt.append(go);
+}
+
+// ---- your own words for a "Type something" row: one line, written here, sent only after the confirm sheet
+function openTypeSheet(o) {
+  const box = el('div');
+  box.append(el('h3', null, o.title), el('div', 'sub', o.sub));
+  const ta = el('textarea', 'typebox'); ta.id = 'typebox'; ta.rows = 4; ta.maxLength = 1000; ta.placeholder = 'Your own words'; ta.value = o.initial || '';
+  ta.autocomplete = 'off'; ta.spellcheck = true;
+  const one = () => ta.value.replace(/\s*[\r\n\t]+\s*/g, ' ').trim();   // a line break would send it early, a tab would move the cursor
+  const go = btn(o.cta, 'go', () => { const t = one(); if (t) o.onDone(t); });
+  const upd = () => { go.disabled = !one(); };
+  ta.addEventListener('input', upd);
+  const row = el('div', 'btns'); row.append(btn('Cancel', '', closeSheet), go);
+  box.append(ta, el('div', 'dim', 'One line. It is shown to you again before anything is typed.'), row);
+  openSheet(box); upd();
+  setTimeout(() => ta.focus(), 60);
 }
 
 // ---- photos and files: resize on the phone, upload to the host, and put the saved path in the message box.
@@ -1885,13 +1923,14 @@ const lastSplash = store.get('shepr.splash', 0);
 const quick = REDUCED || Date.now() - lastSplash < 20 * 60 * 1000;   // seen it recently: keep it short
 if (quick) splash.classList.add('quick');
 store.set('shepr.splash', Date.now());
+const sver = $('sver'); if (sver) sver.textContent = BUILD;
 let splashGone = false;
 function hideSplash(force) {
   if (splashGone) return;
-  const min = force ? 0 : quick ? 650 : 2500;
+  const min = force ? 0 : quick ? 650 : 3500;
   const wait = Math.max(0, min - (performance.now() - t0));
   splashGone = true;
-  setTimeout(() => { splash.classList.add('out'); setTimeout(() => splash.remove(), 650); }, wait);
+  setTimeout(() => { splash.classList.add('out'); setTimeout(() => splash.remove(), 600); }, wait);
 }
 splash.addEventListener('pointerdown', () => { splashGone = false; hideSplash(true); });
 

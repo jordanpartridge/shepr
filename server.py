@@ -391,6 +391,12 @@ def _poll_host(host):
         return host, None, {}, "bad_response: herdr's agent list is not a list"
     agents = [a for a in agents if isinstance(a, dict) and isinstance(a.get("pane_id"), str)
               and isinstance(a.get("agent_status"), str)]
+    for a in [x for x in agents if x["agent_status"] == "blocked"][:6]:
+        try:   # what is it waiting on? the question on screen, or "nothing", which is itself worth knowing
+            m = parse_menu(read_tail(host, a["pane_id"], 40))
+            a["_ask"] = {"q": (m or {}).get("question"), "n": len((m or {}).get("options") or []), "menu": bool(m)}
+        except Exception:
+            a["_ask"] = None
     try:
         wlist = run_herdr(host["machine"], ["workspace", "list"], timeout=9)["result"]["workspaces"]
         ws = {w["workspace_id"]: w.get("label") for w in wlist}
@@ -402,36 +408,66 @@ def _poll_host(host):
     return host, agents, ws, None
 
 
-def poll_all():
-    hosts = discover_hosts()
-    live = [h for h in hosts if h["enabled"]]
-    results = {}
-    if live:
-        with concurrent.futures.ThreadPoolExecutor(max_workers=len(live)) as ex:
-            for host, agents, ws, err in ex.map(poll_host, live):
-                results[host["id"]] = (agents, ws, err)
-    out_hosts, out_agents = [], []
-    for h in hosts:
-        entry = {"id": h["id"], "kind": h["kind"], "status": "ok", "error": None, "counts": {}, "asleep": ASLEEP_N.get(h["id"], 0)}
-        if not h["enabled"]:
-            entry.update(status="disabled", error=f"saved machine is disabled (herdr machine enable {h['id']})")
-        else:
-            agents, ws, err = results[h["id"]]
-            if err:
-                entry.update(status="down", error=err)
-            else:
-                for a in agents:
-                    s = a["agent_status"]
-                    entry["counts"][s] = entry["counts"].get(s, 0) + 1
-                    out_agents.append(shape_agent(h, a, ws))
-        with LOCK:
-            entry["last_ok"] = (STATE["hosts"].get(h["id"]) or {}).get("last_ok")
-        out_hosts.append(entry)
+HOST_SNAP = {}       # host id -> {"entry": {...}, "agents": [...]}: each host publishes on its OWN clock
+HOST_ORDER = []
+_inflight = {}       # host id -> the Future of its poll in flight (one poll per host at a time)
+_pool = concurrent.futures.ThreadPoolExecutor(max_workers=16)
+
+
+def _publish():
+    """Put every host's latest answer together. A slow or dead host keeps its old (or 'down') entry and never holds the others back."""
     with LOCK:
-        SNAP.update(ts=time.time(), hosts=out_hosts, agents=out_agents, polls=SNAP["polls"] + 1)
+        hosts, agents = [], []
+        for hid in HOST_ORDER:
+            e = HOST_SNAP.get(hid)
+            if e:
+                hosts.append(e["entry"]); agents.extend(e["agents"])
+        SNAP.update(ts=time.time(), hosts=hosts, agents=agents, polls=SNAP["polls"] + 1)
         events = PUSH_EVENTS[:]; PUSH_EVENTS.clear()
     if events:
         threading.Thread(target=dispatch_push, args=(events,), daemon=True).start()
+
+
+def _poll_and_publish(h):
+    host, agents, ws, err = poll_host(h)
+    entry = {"id": h["id"], "kind": h["kind"], "status": "ok", "error": None, "counts": {}, "asleep": ASLEEP_N.get(h["id"], 0)}
+    shaped = []
+    if err:
+        entry.update(status="down", error=err)
+    else:
+        for a in agents:
+            entry["counts"][a["agent_status"]] = entry["counts"].get(a["agent_status"], 0) + 1
+            shaped.append(shape_agent(h, a, ws))
+    with LOCK:
+        entry["last_ok"] = (STATE["hosts"].get(h["id"]) or {}).get("last_ok")
+        HOST_SNAP[h["id"]] = {"entry": entry, "agents": shaped}
+    _publish()
+
+
+def poll_all(wait=2.0):
+    """Start a poll of every enabled host and wait up to `wait` seconds for the quick ones. A host that is down (an ssh that
+    takes 9 s to time out) keeps polling in the background and publishes when it answers: it can no longer make every refresh
+    wait for it, or keep the live hosts' data minutes stale."""
+    hosts = discover_hosts()
+    with LOCK:
+        HOST_ORDER[:] = [h["id"] for h in hosts]
+        for hid in [k for k in HOST_SNAP if k not in HOST_ORDER]:
+            del HOST_SNAP[hid]
+        for h in hosts:
+            if not h["enabled"]:
+                HOST_SNAP[h["id"]] = {"agents": [], "entry": {"id": h["id"], "kind": h["kind"], "status": "disabled", "counts": {}, "asleep": 0, "last_ok": None,
+                                                             "error": f"saved machine is disabled (herdr machine enable {h['id']})"}}
+    futs = []
+    for h in hosts:
+        if not h["enabled"]:
+            continue
+        f = _inflight.get(h["id"])
+        if f is None or f.done():
+            f = _pool.submit(_poll_and_publish, h); _inflight[h["id"]] = f
+        futs.append(f)
+    if not futs:
+        _publish()
+    concurrent.futures.wait(futs, timeout=wait)
 
 
 def shape_agent(host, a, ws):
@@ -444,7 +480,7 @@ def shape_agent(host, a, ws):
         "cwd": cwd, "project": os.path.basename(cwd.rstrip("/")) or cwd or "?",
         "workspace": ws.get(a.get("workspace_id")) or a.get("workspace_id"),
         "wlabel": ws.get(a.get("workspace_id")) or "",   # the name Fred gave the herdr workspace: what the phone calls the session
-        "session": sess[:8], "focused": bool(a.get("focused")),
+        "session": sess[:8], "focused": bool(a.get("focused")), "ask": a.get("_ask"),
     }
 
 
@@ -545,7 +581,16 @@ def parse_menu(text):
     cur_n = next((h[1] for h in run if h[0] == cur), None)
     if cur_n is None and not multi:
         return None
-    out = {"current": cur_n or 0, "cur_idx": cur_idx, "options": opts, "multi": multi}
+    question = None
+    for i in range(run[0][0] - 1, max(-1, run[0][0] - 8), -1):   # the nearest real line above the options is the question
+        l = lines[i].strip().lstrip("\u2502|").strip()
+        if not l or set(l) <= set("\u2500\u2501\u2550- \u2502"):
+            continue
+        if l[0] in "\u2190\u2192\u2610\u2612\u2714" or l.startswith(("Esc", "Enter to")):   # the tab bar of a multi-question form
+            continue
+        question = l[:200]
+        break
+    out = {"current": cur_n or 0, "cur_idx": cur_idx, "options": opts, "multi": multi, "question": question}
     if multi:
         out["action"] = {"label": act[1], "idx": next(k for k, r in enumerate(rows) if r[0] == "act"), "focused": act[2]}
     return out
@@ -564,6 +609,19 @@ def need_host(hid):
         if h["id"] == hid and h["enabled"] and hid in known:
             return h
     raise HerdrError("bad_host", f"unknown or unreachable host {hid!r}")
+
+
+def _typed_text(text):
+    """Your own words for a "Type something" row: one line, no control characters (a newline would submit early, a tab would move)."""
+    if text is None or (isinstance(text, str) and not text.strip()):
+        raise HerdrError("needs_text", "that option is for your own words: type them first")
+    if not isinstance(text, str) or CTRL_RE.search(text) or "\n" in text or "\r" in text or "\t" in text or len(text) > 1000:
+        raise HerdrError("bad_text", "your own words must be one line of up to 1000 characters")
+    return text.strip()
+
+
+def _nav(frm, to):
+    return ["down"] * (to - frm) if to > frm else ["up"] * (frm - to)
 
 
 def build_plan(body):
@@ -628,11 +686,22 @@ def build_plan(body):
             raise HerdrError("no_menu", f"no option {n} on screen right now")
         if menu.get("multi"):
             raise HerdrError("multi_select", "this question lets you tick several options: tick them, then use Submit")
-        d = opt["idx"] - menu["cur_idx"]
-        keys = (["down"] if d > 0 else ["up"]) * abs(d) + ["enter"]
-        steps = [{"op": "keys", "keys": keys}]
-        approves = opt["approves"]
-        lines = [("Picks", f"{n}. {opt['label']}"), ("By pressing", human_keys(keys))]
+        text_at = None
+        if opt["free"]:
+            # "Type something" is a text field that is live while the cursor is on it. Enter with nothing typed DECLINES the
+            # question, so this option never goes through the plain pick: arrow to it, type, then Enter.
+            text = _typed_text(body.get("text"))
+            nav = _nav(menu["cur_idx"], opt["idx"])
+            steps = ([{"op": "keys", "keys": nav, "wait": 0.35}] if nav else []) + [{"op": "text", "text": text}, {"op": "keys", "keys": ["enter"]}]
+            text_at, approves = opt["idx"], False
+            lines = [("Picks", f"{n}. {opt['label']}"), ("Types", text), ("By pressing", (human_keys(nav) + " then " if nav else "") + "your words, then ⏎")]
+        else:
+            if body.get("text") is not None:
+                raise HerdrError("bad_text", "that option does not take your own words")
+            keys = _nav(menu["cur_idx"], opt["idx"]) + ["enter"]
+            steps = [{"op": "keys", "keys": keys}]
+            approves = opt["approves"]
+            lines = [("Picks", f"{n}. {opt['label']}"), ("By pressing", human_keys(keys))]
     elif kind == "multi":
         if status != "blocked":
             raise HerdrError("not_blocked", "ticking options only applies to a blocked agent")
@@ -648,22 +717,36 @@ def build_plan(body):
         want = set(picks)
         flip = [n for n in sorted(tick) if (n in want) != tick[n]["checked"]]
         advance = bool(body.get("advance", True))
-        if not flip and not advance:
+        free_o = next((o for o in menu["options"] if o["free"]), None)
+        text = body.get("text")
+        if text is not None:
+            if not free_o:
+                raise HerdrError("bad_text", "this question has no place to type your own words")
+            text = _typed_text(text)
+        if not flip and not advance and not text:
             raise HerdrError("nothing", "that is already how it looks on screen")
         # A digit toggles that option in place and leaves the cursor where it was, so the ticks need no navigation.
         # Each digit is its own keypress with a pause after it: sent together, Claude reads "13" as pasted text and ticks nothing.
-        keys = [str(n) for n in flip]
+        keys, steps, cur = [str(n) for n in flip], [], menu["cur_idx"]
         act = menu["action"]
-        steps = [{"op": "keys", "keys": [k], "wait": 0.3} for k in keys]
+        if text and flip and cur == free_o["idx"]:   # digits typed while the cursor is on the text row would land in the text
+            j = free_o["idx"] - 1 if free_o["idx"] > 0 else 1
+            steps.append({"op": "keys", "keys": _nav(cur, j), "wait": 0.3}); keys = _nav(cur, j) + keys; cur = j
+        steps += [{"op": "keys", "keys": [k], "wait": 0.3} for k in [str(n) for n in flip]]
+        if text:
+            go = _nav(cur, free_o["idx"])
+            if go:
+                steps.append({"op": "keys", "keys": go, "wait": 0.35}); keys += go
+            steps.append({"op": "text", "text": text}); keys += ["\u2328"]   # the keyboard glyph stands for the typed words
+            cur = free_o["idx"]
         if advance:
-            d = act["idx"] - menu["cur_idx"]
-            nav = (["down"] if d > 0 else ["up"]) * abs(d) + ["enter"]
+            nav = _nav(cur, act["idx"]) + ["enter"]
             keys += nav
             steps.append({"op": "keys", "keys": nav})
         approves = any(tick[n]["approves"] and n in want for n in flip)
         on = [f"{n}. {tick[n]['label']}" for n in flip if n in want]
         off = [f"{n}. {tick[n]['label']}" for n in flip if n not in want]
-        lines = ([("Ticks", ", ".join(on))] if on else []) + ([("Unticks", ", ".join(off))] if off else []) + \
+        lines = ([("Ticks", ", ".join(on))] if on else []) + ([("Unticks", ", ".join(off))] if off else []) + ([("Types", text)] if text else []) + \
                 [("Leaves ticked", ", ".join(f"{o['n']}. {o['label']}" + ("" if o["n"] in tick else " (cannot be changed here)")
                                              for o in menu["options"] if o["checked"] and o["n"] not in flip) or "nothing else")] + \
                 ([("Then", f"{act['label']} (⏎)")] if advance else [("Then", "stays on the question")]) + \
@@ -679,6 +762,10 @@ def build_plan(body):
     }
     if kind == "choose":
         plan["snap"]["pick"] = [n, opt["label"], menu["current"]]
+    if kind == "choose" and text_at is not None:
+        plan["snap"]["text_at"] = text_at
+    if kind == "multi" and text:
+        plan["snap"]["text_at"] = free_o["idx"]
     if kind == "multi":
         plan["snap"]["multi"] = [[o["n"], o["label"], o["checked"]] for o in menu["options"]] + [menu["cur_idx"], menu["action"]["idx"]]
     with LOCK:
@@ -698,7 +785,9 @@ def run_step(host, pane, step):
     if step["op"] == "keys":
         return run_herdr(m, ["pane", "send-keys", pane] + step["keys"], timeout=10, want_json=False)
     if step["op"] == "text":
-        return run_herdr(m, ["pane", "send-text", pane, "--", step["text"]], timeout=10, want_json=False)
+        # No "--" here: herdr's send-text has no option parsing, so it would type the two dashes into the pane (it did, for every
+        # answer typed into a dialog, until v26). Leading dashes in the text are fine without it.
+        return run_herdr(m, ["pane", "send-text", pane, step["text"]], timeout=10, want_json=False)
     if step["op"] == "run":
         return run_herdr(m, ["pane", "run", pane, step["cmd"]], timeout=10, want_json=False)
     if step["op"] == "prompt":
@@ -765,12 +854,21 @@ def _commit_pane_plan(host, plan):
             # final move-and-Enter, so a question that changed meanwhile is never submitted.
             a2 = get_agent(host, plan["pane"])
             m2 = parse_menu(read_tail(host, plan["pane"], 80))
-            same = m2 and m2.get("multi") and m2["cur_idx"] == snap["multi"][-2] and \
-                [o["label"] for o in m2["options"]] == [x[1] for x in snap["multi"][:-2]]
+            ta = snap.get("text_at")
+            keep = lambda labels: [None if k == ta else l for k, l in enumerate(labels)]   # the row you typed in no longer says "Type something"
+            same = m2 and m2.get("multi") and m2["cur_idx"] == (ta if ta is not None else snap["multi"][-2]) and \
+                keep([o["label"] for o in m2["options"]]) == keep([x[1] for x in snap["multi"][:-2]])
             if not same or (a2["agent_status"], (a2.get("agent_session") or {}).get("value")) != (snap["status"], snap["session"]):
                 audit(plan, False, "moved_on: question changed between the ticks and the submit")
                 raise HerdrError("moved_on", "the question changed while ticking, so Submit was not sent. "
                                              f"Ticks already sent: {', '.join(done) or 'none'}. Read the screen before trying again.")
+        if step["op"] == "text" and snap.get("text_at") is not None:
+            # Never type your words anywhere but the row meant for them: look at the screen and check where the cursor is.
+            m3 = parse_menu(read_tail(host, plan["pane"], 80))
+            if not m3 or m3["cur_idx"] != snap["text_at"]:
+                audit(plan, False, "moved_on: the cursor was not on the typing row")
+                raise HerdrError("moved_on", "the cursor did not land on the row for your own words, so nothing was typed. "
+                                             f"Sent before stopping: {', '.join(done) or 'nothing'}. Look at the screen and try again.")
         try:
             run_step(host, plan["pane"], step)
             done.append(step["op"])
@@ -1417,36 +1515,50 @@ def ago(ts):
     return "just now"
 
 
+def _asleep_host(h):
+    """The sleeping projects on one host; raises HerdrError/KeyError/TypeError when the host cannot be read."""
+    items = []
+    wl = {w["workspace_id"]: w for w in run_herdr(h["machine"], ["workspace", "list"], timeout=9)["result"]["workspaces"]}
+    panes = run_herdr(h["machine"], ["pane", "list"], timeout=9)["result"]["panes"]
+    done = set()
+    for p in panes:
+        if not isinstance(p, dict) or p.get("agent_status") != "unknown" or p.get("agent") or not isinstance(p.get("pane_id"), str):
+            continue
+        wsid = p.get("workspace_id")
+        w = wl.get(wsid) or {}
+        if wsid in done or w.get("agent_status") != "unknown":   # a workspace with an agent anywhere is not asleep
+            continue
+        done.add(wsid)
+        cwd = p.get("foreground_cwd") or p.get("cwd") or ""
+        items.append({"host": h["id"], "pane": p["pane_id"], "label": w.get("label") or os.path.basename(cwd.rstrip("/")) or p["pane_id"],
+                      "cwd": cwd})
+        if h["kind"] == "local":
+            it = items[-1]
+            it["claude"], it["codex"] = project_last_active(cwd), codex_last_active(cwd)
+            it["last"] = max(it["claude"] or 0, it["codex"] or 0) or None
+        else:
+            items[-1].update(claude=None, codex=None, last=None)
+    return items
+
+
 def asleep_view():
-    """Every project with no agent running, newest conversation first, across all enabled hosts."""
-    items, errors = [], []
+    """Every project with no agent running, newest conversation first, across all enabled hosts. Hosts are read in parallel,
+    and one the poller already knows is down is reported at once instead of costing two 9 s ssh timeouts."""
+    items, errors, futs = [], [], {}
     for h in discover_hosts():
         if not h["enabled"]:
             continue
+        with LOCK:
+            known = (HOST_SNAP.get(h["id"]) or {}).get("entry") or {}
+        if known.get("status") == "down":
+            errors.append({"host": h["id"], "error": str(known.get("error") or "down")[:160]})
+            continue
+        futs[_pool.submit(_asleep_host, h)] = h
+    for f, h in futs.items():
         try:
-            wl = {w["workspace_id"]: w for w in run_herdr(h["machine"], ["workspace", "list"], timeout=9)["result"]["workspaces"]}
-            panes = run_herdr(h["machine"], ["pane", "list"], timeout=9)["result"]["panes"]
+            items += f.result()
         except (HerdrError, KeyError, TypeError) as e:
             errors.append({"host": h["id"], "error": str(e)[:160]})
-            continue
-        done = set()
-        for p in panes:
-            if not isinstance(p, dict) or p.get("agent_status") != "unknown" or p.get("agent") or not isinstance(p.get("pane_id"), str):
-                continue
-            wsid = p.get("workspace_id")
-            w = wl.get(wsid) or {}
-            if wsid in done or w.get("agent_status") != "unknown":   # a workspace with an agent anywhere is not asleep
-                continue
-            done.add(wsid)
-            cwd = p.get("foreground_cwd") or p.get("cwd") or ""
-            items.append({"host": h["id"], "pane": p["pane_id"], "label": w.get("label") or os.path.basename(cwd.rstrip("/")) or p["pane_id"],
-                          "cwd": cwd})
-            if h["kind"] == "local":
-                it = items[-1]
-                it["claude"], it["codex"] = project_last_active(cwd), codex_last_active(cwd)
-                it["last"] = max(it["claude"] or 0, it["codex"] or 0) or None
-            else:
-                items[-1].update(claude=None, codex=None, last=None)
     items.sort(key=lambda i: (-(i["last"] or 0), i["label"].lower()))
     return {"items": items[:400], "errors": errors, "at": time.time()}
 

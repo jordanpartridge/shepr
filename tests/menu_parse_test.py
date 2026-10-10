@@ -80,4 +80,24 @@ check("wizard: options 2 and 3 are ticked", [o["n"] for o in m["options"] if o["
 
 m = srv.parse_menu(REVIEW)
 check("review screen is plain single choice", m and not m["multi"] and [o["n"] for o in m["options"]] == [1, 2])
+
+FREE = """Pick one
+
+❯ 1. Alpha
+     Choose Alpha.
+  2. Bravo
+     Choose Bravo.
+  3. Type something.
+─────────────────────────────
+  4. Chat about this
+
+Enter to select · ↑/↓ to navigate · Esc to cancel"""
+check("question: a permission dialog's question is the line above its options", srv.parse_menu(SINGLE)["question"] == "Do you want to proceed?")
+check("question: a multi-select's question", srv.parse_menu(MULTI_ON_OPTION)["question"] == "Pick any")
+check("question: a multi-question form takes the question, not the tab bar above it", srv.parse_menu(WIZARD_ON_NEXT)["question"].startswith("Capture entry points: how should you get things INTO the app?"))
+check("question: the review screen's question", srv.parse_menu(REVIEW)["question"] == "Ready to submit your answers?")
+mf = srv.parse_menu(FREE)
+check("a 'Type something.' row is recognised as a text row, and no other row is", [o["free"] for o in mf["options"]] == [False, False, True, False] and mf["question"] == "Pick one")
+check("question: no menu means no question", srv.parse_menu("just some prose\nno options here") is None)
+
 sys.exit(0 if ok else 1)

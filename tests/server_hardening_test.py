@@ -7,6 +7,7 @@ for _k in ("SHEPR_NEW_CMD", "SHEPR_CLAUDE_CMD", "SHEPR_CODEX_CMD", "SHEPR_PROJEC
 os.environ["SHEPR_POLL"] = "15"
 spec = importlib.util.spec_from_file_location("shepr_server", os.path.join(here, "..", "server.py"))
 srv = importlib.util.module_from_spec(spec); spec.loader.exec_module(srv)
+REAL_RUN_STEP = srv.run_step
 
 ok = True
 def check(name, cond):
@@ -150,5 +151,122 @@ for bad in ("two\nlines", "x" * 501, "bell\x07", 5):
     except srv.HerdrError as e: refused = e.code == "bad_message"
     if not refused: check(f"first message {bad!r:.20} refused", False)
 check("first message: newline, control character, non-string and over 500 characters are refused", True)
+
+# ---- "Type something": your own words. Enter with nothing typed DECLINES the question, so it needs text, and the cursor is
+# checked before a single character is typed.
+captured = []
+real_run_herdr = srv.run_herdr
+srv.run_herdr = lambda machine, args, timeout=10, want_json=True: captured.append(list(args)) or ""
+REAL_RUN_STEP({"machine": None}, "w1:p1", {"op": "text", "text": "-n hello -- world"})
+check("typing into a dialog sends the text WITHOUT a '--' (herdr would type the dashes), even if the text starts with a dash", captured[-1] == ["pane", "send-text", "w1:p1", "-n hello -- world"])
+srv.run_herdr = real_run_herdr
+SINGLE = """Pick one
+
+%s 1. Alpha
+     Choose Alpha.
+%s 2. Bravo
+     Choose Bravo.
+%s 3. Type something.
+─────────────────────────────
+  4. Chat about this
+
+Enter to select · ↑/↓ to navigate · Esc to cancel"""
+on = lambda row: SINGLE % tuple("❯" if i == row else " " for i in (1, 2, 3))
+srv.READONLY = False
+srv.need_host = lambda h: {"id": "gus", "machine": None, "kind": "local", "enabled": True}
+srv.get_agent = lambda host, pane: {"agent_status": "blocked", "state_change_seq": 7, "agent_session": {"value": "s1"}}
+srv.read_tail = lambda host, pane, lines, max_bytes=None: on(1)
+def refused(body):
+    try: srv.build_plan({"host": "gus", "pane": "w1:p1", **body}); return None
+    except srv.HerdrError as e: return e.code
+check("type-something: choosing it with no words is refused (the plain pick would decline the question)", refused({"kind": "choose", "option": 3}) == "needs_text" and refused({"kind": "choose", "option": 3, "text": "   "}) == "needs_text")
+check("type-something: words with a newline, a tab, a control character, or over 1000 characters are refused",
+      all(refused({"kind": "choose", "option": 3, "text": x}) == "bad_text" for x in ("a\nb", "a\tb", "a\x07b", "x" * 1001, 5)))
+check("type-something: a normal option does not take words", refused({"kind": "choose", "option": 1, "text": "hi"}) == "bad_text")
+p = srv.build_plan({"host": "gus", "pane": "w1:p1", "kind": "choose", "option": 3, "text": "What about 42, it's \"ok\" $HOME?"})
+st = srv.PLANS[p["nonce"]]["steps"]
+check("type-something: the plan is arrow down twice, type the words, then Enter, and says so",
+      [s["op"] for s in st] == ["keys", "text", "keys"] and st[0]["keys"] == ["down", "down"] and st[1]["text"].startswith("What about 42") and st[2]["keys"] == ["enter"]
+      and any(l["k"] == "Types" for l in p["lines"]) and srv.PLANS[p["nonce"]]["snap"]["text_at"] == 2)
+# commit: the screen is read before the words go in
+seq = {"screens": []}
+sent = []
+srv.run_step = lambda host, pane, step: (sent.append(step["op"] + (":" + step["text"] if step["op"] == "text" else ":" + ",".join(step["keys"]))), None)[1]
+def go(screens):
+    sent.clear(); it = iter(screens); last = [screens[0]]
+    srv.read_tail = lambda host, pane, lines, max_bytes=None: next(it, last[0])
+    p = srv.build_plan({"host": "gus", "pane": "w1:p1", "kind": "choose", "option": 3, "text": "mine"}); srv.PLANS[p["nonce"]]["made"] = time.time(); srv.LAST_SENT.clear()
+    try: srv.commit_plan(p["nonce"]); return None
+    except srv.HerdrError as e: return e.code
+srv.PLANS.clear()
+res_ok = go([on(1), on(1), on(3)])                      # plan, commit check, then (after the arrows) the cursor IS on row 3
+check("type-something: when the cursor lands on the row, the arrows, the words and Enter are sent in that order", res_ok is None and sent == ["keys:down,down", "text:mine", "keys:enter"])
+res_bad = go([on(1), on(1), on(1)])                     # the arrows did nothing: the cursor is still on row 1
+check("type-something: if the cursor did NOT land on the row, NOTHING is typed and Enter is not pressed", res_bad == "moved_on" and "text:mine" not in sent and "keys:enter" not in sent)
+
+# multi-select with your own words: tick, arrow to the row, type (that ticks it), arrow to Submit
+MULTI = """Pick any
+
+%s 1. [ ] Alpha
+         First
+%s 2. [ ] Bravo
+         Second
+%s 3. [%s] %s
+     Submit
+─────────────────────────────
+  4. Chat about this
+
+Enter to select · ↑/↓ to navigate · Esc to cancel"""
+m_on = lambda row, free="Type something", tick=" ": MULTI % tuple(["❯" if r == row else " " for r in (1, 2, 3)] + [tick, free])
+srv.read_tail = lambda host, pane, lines, max_bytes=None: m_on(1)
+p = srv.build_plan({"host": "gus", "pane": "w1:p1", "kind": "multi", "picks": [1], "text": "my own", "advance": True})
+st = srv.PLANS[p["nonce"]]["steps"]
+check("multi + words: tick 1, arrow down to the typing row, type, then arrow to Submit and Enter (never Enter on the typing row)",
+      [(s["op"], s.get("keys") or s.get("text")) for s in st] == [("keys", ["1"]), ("keys", ["down", "down"]), ("text", "my own"), ("keys", ["down", "enter"])] and any(l["k"] == "Types" and l["v"] == "my own" for l in p["lines"]))
+srv.read_tail = lambda host, pane, lines, max_bytes=None: m_on(3)
+p = srv.build_plan({"host": "gus", "pane": "w1:p1", "kind": "multi", "picks": [1], "text": "my own", "advance": True})
+st = srv.PLANS[p["nonce"]]["steps"]
+check("multi + words, cursor already on the typing row: step OFF it first so the digit is not typed into the text",
+      [(s["op"], s.get("keys") or s.get("text")) for s in st][:3] == [("keys", ["up"]), ("keys", ["1"]), ("keys", ["down"])])
+srv.read_tail = lambda host, pane, lines, max_bytes=None: m_on(1, free="Charlie")
+check("multi + words: a question with no 'Type something' row refuses words", refused({"kind": "multi", "picks": [], "text": "x", "advance": True}) == "bad_text")
+# the mid-plan recheck must accept that the typed-in row no longer says "Type something"
+screens = [m_on(1), m_on(1), m_on(3, free="my own", tick="✔")]
+it = iter(screens); lastm = [screens[-1]]
+srv.read_tail = lambda host, pane, lines, max_bytes=None: next(it, lastm[0])
+srv.PLANS.clear(); srv.LAST_SENT.clear(); sent.clear()
+p = srv.build_plan({"host": "gus", "pane": "w1:p1", "kind": "multi", "picks": [1], "text": "my own", "advance": True}); srv.PLANS[p["nonce"]]["made"] = time.time()
+try: srv.commit_plan(p["nonce"]); r = None
+except srv.HerdrError as e: r = e.code
+check("multi + words: the whole sequence runs, and the row you typed in (now showing your words) does not trip the safety recheck", r is None and sent[-1] == "keys:down,enter" and "text:my own" in sent)
+
+# ---- the poller reads each blocked agent's screen, so the phone can say WHAT it is waiting on (or that nothing is on screen)
+SCREENS = {"w1:p1": "Which approach?\n\n❯ 1. One\n  2. Two\n  3. Type something.\n──────\n  4. Chat about this", "w2:p1": "I am thinking about something.\nNo question here."}
+srv.read_tail = lambda host, pane, lines, max_bytes=None: SCREENS[pane]
+raw = lambda pane, st: {"pane_id": pane, "agent_status": st, "state_change_seq": 1, "cwd": "/x", "agent_session": {}, "workspace_id": "w"}
+srv.run_herdr = lambda machine, args, timeout=10, want_json=True: ({"result": {"agents": [raw("w1:p1", "blocked"), raw("w2:p1", "blocked"), raw("w3:p1", "working")]}} if args[:2] == ["agent", "list"] else {"result": {"workspaces": []}})
+hh, ags, _ws, err = srv.poll_host({"id": "gus", "machine": None, "kind": "local", "enabled": True})
+sh = {a["pane_id"]: srv.shape_agent({"id": "gus"}, a, {}) for a in ags}
+check("poll: a blocked agent with a menu carries its question and option count", sh["w1:p1"]["ask"] == {"q": "Which approach?", "n": 4, "menu": True})
+check("poll: a blocked agent with nothing to answer on screen is marked, not hidden", sh["w2:p1"]["ask"] == {"q": None, "n": 0, "menu": False})
+check("poll: an agent that is not blocked is never read", sh["w3:p1"]["ask"] is None)
+# ---- a dead host must not make every refresh wait, nor keep the live hosts' data stale
+srv.HOST_SNAP.clear(); srv.HOST_ORDER.clear(); srv._inflight.clear(); srv.SNAP.update(ts=0, hosts=[], agents=[], polls=0)
+calls = {"slow": 0}
+H_FAST = {"id": "gus", "machine": None, "kind": "local", "enabled": True}
+H_SLOW = {"id": "vic", "machine": "vic", "kind": "remote", "enabled": True}
+srv.discover_hosts = lambda: [H_FAST, H_SLOW]
+def fake_poll_host(h):
+    if h["id"] == "vic":
+        calls["slow"] += 1; time.sleep(2.5); return h, None, {}, "timeout: ssh took longer than 9s"
+    return h, [{"pane_id": "w1:p1", "agent_status": "blocked", "state_change_seq": 1, "cwd": "/x", "agent_session": {}, "workspace_id": "w", "_ask": None}], {"w": "burnbar"}, None
+srv.poll_host = fake_poll_host
+t0 = time.time(); srv.poll_all(wait=0.6); took = time.time() - t0
+check("dead host: a refresh returns in well under the dead host's 2.5 s timeout", took < 1.5)
+check("dead host: the live host's agents are already in the snapshot when it returns", [a["wlabel"] for a in srv.SNAP["agents"]] == ["burnbar"] and [h["id"] for h in srv.SNAP["hosts"]] == ["gus"])
+t0 = time.time(); srv.poll_all(wait=0.3); srv.poll_all(wait=0.3)
+check("dead host: asking again while its poll is still running does not start a second poll for it", calls["slow"] == 1)
+time.sleep(2.6)
+check("dead host: when it finally answers it appears, as down, next to the live host (order kept)", [(h["id"], h["status"]) for h in srv.SNAP["hosts"]] == [("gus", "ok"), ("vic", "down")] and len(srv.SNAP["agents"]) == 1)
 
 sys.exit(0 if ok else 1)

@@ -1,0 +1,11 @@
+Pick one
+
+❯ 1. Alpha
+     Choose Alpha.
+  2. Bravo
+     Choose Bravo.
+  3. Type something.
+─────────────────────────────────────────
+  4. Chat about this
+
+Enter to select · ↑/↓ to navigate · Esc to cancel

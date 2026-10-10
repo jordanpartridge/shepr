@@ -44,6 +44,13 @@ case "${1:-}" in
     b=$(H workspace create --label busy --cwd /tmp/shepr-busy | python3 -c 'import json,sys;print(json.load(sys.stdin)["result"]["root_pane"]["pane_id"])')
     H pane run "$b" "sleep 100000" >/dev/null; sleep 1; echo "dormant + busy created" ;;
   asleep-rm) for w in $(H workspace list | python3 -c 'import json,sys;[print(w["workspace_id"]) for w in json.load(sys.stdin)["result"]["workspaces"] if w["label"] in ("dormant","busy")]'); do H workspace close "$w" >/dev/null; done ;;
+  free) for w in $(H workspace list | python3 -c 'import json,sys;[print(w["workspace_id"]) for w in json.load(sys.stdin)["result"]["workspaces"] if w["label"]=="freetext"]'); do H workspace close "$w" >/dev/null; done
+    HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    mk freetext "$HOME/Projects/whats-next" blocked claude "A question with a typing row" "$HERE/sample-free.txt" ;;
+  nomenu) for w in $(H workspace list | python3 -c 'import json,sys;[print(w["workspace_id"]) for w in json.load(sys.stdin)["result"]["workspaces"] if w["label"]=="nomenu"]'); do H workspace close "$w" >/dev/null; done
+    HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    mk nomenu "$HOME/Projects/whats-next" blocked claude "Blocked with nothing to answer" "$HERE/sample-nomenu.txt" ;;
+  free-rm|nomenu-rm) for w in $(H workspace list | python3 -c 'import json,sys;[print(w["workspace_id"]) for w in json.load(sys.stdin)["result"]["workspaces"] if w["label"] in ("freetext","nomenu")]'); do H workspace close "$w" >/dev/null; done ;;
   multi-rm) H workspace list | python3 -c 'import json,sys;[print(w["workspace_id"]) for w in json.load(sys.stdin)["result"]["workspaces"] if w["label"]=="multi"]' | while read w; do H workspace close "$w" >/dev/null; done ;;
   down) herdr session stop hrtest < /dev/null ;;
   env) echo "export HERDR_SOCKET_PATH=$SOCK SHEPR_STATE=/tmp/shepr-test-state SHEPR_POLL=3" ;;
