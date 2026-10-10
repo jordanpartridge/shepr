@@ -1,0 +1,26 @@
+Shepr is out. It's an iPhone app for herdr.
+
+My agents block on a question and then sit there for an hour while I'm somewhere else. I wanted to answer them from my phone.
+
+Shepr lists every agent session, on every host, that is waiting on me. Longest blocked first. Tap one, read the last 40 lines, answer it. Idle sessions sit at the bottom and I can wake them with a message.
+
+What it does when I answer:
+
+Nothing is sent until I confirm. The sheet shows the exact keys it will press. If the option I picked reads like an approval, the sheet turns red and says so. If the agent moved on since I looked, it refuses and sends nothing. It never answers anything on its own.
+
+Pairing is a QR code. I run shepr pair on the host, the phone scans it, and the phone makes a key that can't be exported. Every request is signed and a replayed one is refused. It only answers on my tailnet.
+
+It reaches any machine on the tailnet that's running herdr. Hosts, then Scan tailnet, finds them. It only touches nodes that belong to me.
+
+Just added: questions where you tick several options. Tap the numbers, hit Submit, read the sheet, confirm. My first try ticked nothing. Claude reads two digits sent together as pasted text, so each digit now goes as its own keypress. I tested it on a real Claude session: ticked Alpha and Charlie, and the review screen said Alpha, Charlie.
+
+Moving around is tap, double tap and long press. A slash picker keeps your last 6 skills and searches the rest. Pull down to refresh.
+
+It's 3,560 lines. Python standard library on the host, plain JavaScript on the phone, no npm, no build step. One third-party file, jsQR, because Safari has no QR scanner.
+
+It works with herdr (herdr.dev) today. Orca is coming soon.
+
+I've run it on one real iPhone, iOS 18.7. Other phones and versions are untested.
+
+MIT licensed.
+https://github.com/nixfred/shepr
