@@ -2,7 +2,7 @@
    Goal: when the tailnet is unreachable, the user sees YOUR app with YOUR message,
    not Safari's error page. It is NOT a general offline database. */
 
-const VERSION = 'shepr-v22';
+const VERSION = 'shepr-v23';
 // The app shell: everything needed to paint a useful screen with no network.
 const SHELL = ['./', 'index.html', 'app.css', 'app.js', 'manifest.webmanifest', 'icons/icon-180.png', 'icons/icon-192.png'];
 
@@ -68,4 +68,66 @@ self.addEventListener('fetch', (e) => {
       return res;
     }).catch(() => caches.match(req).then((hit) => hit || caches.match('index.html')))
   );
+});
+
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Push. The host sends an EMPTY push ("something changed"). Nothing about your sessions travels through Apple's servers:
+// this worker asks the host what changed, signing the request with the key in this phone's IndexedDB, and shows the answer.
+// ---------------------------------------------------------------------------------------------------------------------
+const swEnc = new TextEncoder();
+const swB64u = (buf) => btoa(String.fromCharCode.apply(null, new Uint8Array(buf))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+const swDevice = () => new Promise((res, rej) => {
+  const r = indexedDB.open('shepr', 1);
+  r.onupgradeneeded = () => r.result.createObjectStore('kv');
+  r.onsuccess = () => { const g = r.result.transaction('kv', 'readonly').objectStore('kv').get('device'); g.onsuccess = () => res(g.result); g.onerror = () => rej(g.error); };
+  r.onerror = () => rej(r.error);
+});
+async function swSignedGet(dev, path, skew) {
+  const ts = String(Math.round(Date.now() + skew));
+  const nonce = swB64u(crypto.getRandomValues(new Uint8Array(12)));
+  const bh = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', new Uint8Array(0)))).map((b) => b.toString(16).padStart(2, '0')).join('');
+  const msg = [ts, nonce, 'GET', path, bh].join('\n');
+  const sig = await crypto.subtle.sign({ name: 'ECDSA', hash: 'SHA-256' }, dev.key, swEnc.encode(msg));
+  return fetch(path, { cache: 'no-store', headers: { 'X-Shepr-Device': dev.id, 'X-Shepr-Ts': ts, 'X-Shepr-Nonce': nonce, 'X-Shepr-Sig': swB64u(sig) } });
+}
+async function swQueue() {
+  const dev = await swDevice();
+  if (!dev || !dev.key) throw new Error('this phone has no key');
+  let skew = 0;
+  for (let i = 0; i < 2; i++) {
+    const r = await swSignedGet(dev, '/api/queue?fresh=1', skew);
+    const j = await r.json().catch(() => ({}));
+    if (r.ok) return j;
+    if (j.error === 'stale' && i === 0) { const h = await (await fetch('/api/hello', { cache: 'no-store' })).json(); skew = h.t * 1000 - Date.now(); continue; }
+    throw new Error(j.message || ('HTTP ' + r.status));
+  }
+  throw new Error('no answer');
+}
+// Names only, never a conversation title: a notification can be read on a locked screen.
+function swDescribe(q) {
+  const name = (a) => a.wlabel || a.project || 'a session';
+  const list = (l) => { const n = [...new Set(l.map(name))]; return n.slice(0, 3).join(', ') + (n.length > 3 ? ' +' + (n.length - 3) : ''); };
+  const blocked = q.agents.filter((a) => a.status === 'blocked'), done = q.agents.filter((a) => a.status === 'done');
+  if (blocked.length) return { title: blocked.length === 1 ? name(blocked[0]) + ' is waiting on you' : blocked.length + ' agents are waiting on you', body: list(blocked), target: blocked[0], count: blocked.length };
+  if (done.length) return { title: done.length === 1 ? name(done[0]) + ' finished' : done.length + ' agents finished', body: list(done), target: done[0], count: 0 };
+  return { title: 'Shepr', body: 'Nothing is waiting on you now.', target: null, count: 0 };
+}
+self.addEventListener('push', (e) => e.waitUntil((async () => {
+  let n = { title: 'Shepr', body: 'An agent needs you. Open Shepr to see which.', target: null, count: null };
+  try { n = swDescribe(await swQueue()); } catch (err) { /* offline, unpaired or rejected: the generic text above still has to be shown */ }
+  await self.registration.showNotification(n.title, { body: n.body, tag: 'shepr-queue', renotify: true, icon: 'icons/icon-192.png',
+    data: n.target ? { host: n.target.host, pane: n.target.pane } : {} });
+  try {
+    if (self.navigator && n.count !== null) { if (n.count && self.navigator.setAppBadge) await self.navigator.setAppBadge(n.count); else if (self.navigator.clearAppBadge) await self.navigator.clearAppBadge(); }
+  } catch (err) { /* the badge is a nicety */ }
+})()));
+self.addEventListener('notificationclick', (e) => {
+  e.notification.close();
+  const d = e.notification.data || {};
+  e.waitUntil((async () => {
+    const list = await clients.matchAll({ type: 'window', includeUncontrolled: true });
+    if (list.length) { await list[0].focus(); if (d.host) list[0].postMessage({ type: 'open', host: d.host, pane: d.pane }); return; }
+    await clients.openWindow(d.host ? '/#' + encodeURIComponent(d.host) + '/' + encodeURIComponent(d.pane) : '/');
+  })());
 });

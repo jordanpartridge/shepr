@@ -228,9 +228,9 @@ typed, no sheet open); inside a session it shows an **Update** button instead. I
 tests/fake-session.sh up                       # isolated herdr session "hrtest" with fake agents
 eval "$(tests/fake-session.sh env)"
 export SHEPR_URL=http://localhost:8743 SHEPR_POLL=3 CLAUDE_HOME=$PWD/tests/fixtures/claude-home   # the UI test expects these fixture skills
-SHEPR_CLAUDE_CMD='echo STARTED' SHEPR_CODEX_CMD='echo CODEX' SHEPR_NEW_CMD='echo CCC' SHEPR_PROJECTS=/tmp/shepr-projects CODEX_HOME=$PWD/tests/fixtures/codex-home python3 server.py 8743 &   # what is typed when you wake a project: echoes, so tests never start a real agent
-node tests/ui.mjs; node tests/sw_offline.mjs; node tests/format.mjs; python3 tests/pair_cli_test.py
-python3 tests/menu_parse_test.py; python3 tests/server_hardening_test.py; python3 tests/history_test.py   # pure Python, no server needed
+SHEPR_CLAUDE_CMD='echo STARTED' SHEPR_CODEX_CMD='echo CODEX' SHEPR_NEW_CMD='echo CCC' SHEPR_PROJECTS=/tmp/shepr-projects SHEPR_PUSH_ALLOW=127.0.0.1:9988 CODEX_HOME=$PWD/tests/fixtures/codex-home python3 server.py 8743 &   # what is typed when you wake a project: echoes, so tests never start a real agent
+node tests/ui.mjs; node tests/sw_offline.mjs; node tests/push_sw.mjs; node tests/format.mjs; python3 tests/pair_cli_test.py
+python3 tests/menu_parse_test.py; python3 tests/server_hardening_test.py; python3 tests/history_test.py; python3 tests/push_test.py   # pure Python, no server needed
 node tests/shots.mjs                           # regenerates docs/img/screens.png from the RUNNING app
 tests/fake-session.sh down
 ```

@@ -643,6 +643,14 @@ const browser = await chromium.launch({ executablePath: '/usr/bin/chromium', arg
     await page.click('#dback').catch(() => {}); await page.waitForTimeout(400);
   }
 
+  // ---- the Notifications card is on the Keys tab
+  {
+    await tap(page, '.tab[data-view=keys]'); await page.waitForTimeout(600);
+    const c = await page.textContent('#notifycard').catch(() => '');
+    check('notifications: the Keys tab has a Notifications card that says what it does and how to enable it', /Notifications/.test(c) && /(Turn on notifications|Home Screen|blocked)/.test(c));
+    await tap(page, '.tab[data-view=waiting]'); await page.waitForTimeout(300);
+  }
+
   // ---- an app newer than its server: say so plainly instead of a confusing pane error
   {
     const prep = (kind) => page.evaluate(async (k) => { const body = JSON.stringify({ host: window.shepr.S.hello.name, kind: k });

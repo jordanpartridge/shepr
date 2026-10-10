@@ -8,7 +8,7 @@
      3. No timer, retry or "auto" anything ever sends. A failed send is reported, never repeated.
      4. The private key never leaves the phone: it is generated non-extractable and only signs. */
 'use strict';
-const BUILD = 'v22';   // keep equal to sw.js VERSION: shown in Keys and logged by the host, so you can see which app a phone is running
+const BUILD = 'v23';   // keep equal to sw.js VERSION: shown in Keys and logged by the host, so you can see which app a phone is running
 
 // ---------------------------------------------------------------------------
 // 1. Service worker. Without this, a dead tailnet shows Safari's error page and
@@ -280,7 +280,7 @@ function fetchQueue(fresh) {
   fetching = true;
   $('mini').classList.add('busy');
   return api('api/queue' + (fresh ? '?fresh=1' : '')).then((q) => {
-    S.q = q; setOnline(!q.cached); render(); if (!q.cached) appIsStale(q.build);
+    S.q = q; setOnline(!q.cached); render(); if (!q.cached) { appIsStale(q.build); updateBadge(); }
     // The app files can be newer than the server process behind them (files are served live, the server only changes when
     // it restarts). New buttons then fail in confusing ways, so say it plainly once.
     if (!q.cached && q.server_build && q.build && q.server_build !== q.build && !S.skewShown) {
@@ -525,6 +525,64 @@ $('refresh').addEventListener('click', () => { fetchQueue(true); if (S.tab === '
   m.addEventListener('touchcancel', () => { y0 = null; paint(0); }, { passive: true });
 })();
 
+// ---- notifications: the host pushes "something changed", the service worker asks what and shows it
+const pushOK = () => 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
+const keyBytes = (b64) => { const s = atob(b64.replace(/-/g, '+').replace(/_/g, '/') + '='.repeat((4 - b64.length % 4) % 4)); return Uint8Array.from(s, (c) => c.charCodeAt(0)); };
+function loadPush() {
+  if (S.pushLoading) return Promise.resolve();
+  S.pushLoading = true;
+  return api('api/push/config').then((c) => { S.push = c; if (S.tab === 'keys') paintMain(); }).catch(() => { /* the banner says what is wrong */ })
+    .finally(() => { S.pushLoading = false; });
+}
+async function pushOn() {
+  try {
+    if (!S.push) await loadPush();
+    const perm = await Notification.requestPermission();
+    if (perm !== 'granted') { notify('Notifications are blocked for Shepr. Turn them on in the iPhone Settings, under Notifications.', true); paintMain(); return; }
+    const reg = await navigator.serviceWorker.ready;
+    const old = await reg.pushManager.getSubscription();
+    if (old) await old.unsubscribe();   // a subscription is tied to one host key: always start fresh
+    const sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: keyBytes(S.push.key) });
+    S.push = await post('api/push/subscribe', { subscription: sub.toJSON(), prefs: { blocked: true, done: false } });
+    notify('Notifications are on.', false);
+  } catch (e) { notify('Could not turn notifications on: ' + e.message, true); }
+  paintMain();
+}
+async function pushOff() {
+  try {
+    const reg = await navigator.serviceWorker.ready; const s = await reg.pushManager.getSubscription(); if (s) await s.unsubscribe();
+    S.push = await post('api/push/unsubscribe', {});
+    if (navigator.clearAppBadge) navigator.clearAppBadge().catch(() => {});
+  } catch (e) { notify(e.message, true); }
+  paintMain();
+}
+function pushPref(k, v) { post('api/push/prefs', Object.assign({}, S.push.prefs, { [k]: v })).then((c) => { S.push = c; paintMain(); }).catch((e) => notify(e.message, true)); }
+function notifyCard() {
+  const c = el('div', 'card'); c.id = 'notifycard';
+  c.append(el('h2', null, 'Notifications'));
+  if (!S.push && S.dev) loadPush();
+  if (!pushOK()) { c.append(el('p', 'dim', 'iPhone only allows notifications for apps on the Home Screen. Tap Share, then Add to Home Screen, and open Shepr from there.')); return c; }
+  if (typeof Notification !== 'undefined' && Notification.permission === 'denied') { c.append(el('p', 'dim', 'Notifications are blocked for Shepr. Turn them on in the iPhone Settings, under Notifications, then come back.')); return c; }
+  if (!S.push || !S.push.subscribed) {
+    c.append(el('p', 'dim', 'Get a buzz when an agent is waiting on you, so you do not find out an hour late. The host only says "something changed"; this phone then asks it what, so nothing about your sessions passes through Apple.'));
+    const b = btn('Turn on notifications', 'mini-btn', pushOn); b.id = 'pushon'; c.append(b);
+    return c;
+  }
+  const row = (label, key) => { const r = el('label', 'chk'); const cb = el('input'); cb.type = 'checkbox'; cb.checked = !!S.push.prefs[key]; cb.addEventListener('change', () => pushPref(key, cb.checked));
+    const m = el('div', 'meta'); m.append(el('div', 'ttl', label)); r.append(cb, m); return r; };
+  c.append(row('An agent is waiting on me', 'blocked'), row('An agent finished', 'done'));
+  const acts = el('div', 'btns'); acts.style.marginTop = '8px';
+  acts.append(btn('Send a test', '', () => post('api/push/test', {}).then((r) => notify(r.ok ? 'Sent. It should arrive in a moment.' : 'The push service answered ' + r.status + '.', !r.ok)).catch((e) => notify(e.message, true))), btn('Turn off', '', pushOff));
+  c.append(acts);
+  return c;
+}
+function updateBadge() {
+  if (!('setAppBadge' in navigator)) return;
+  const n = waiting().length;
+  (n ? navigator.setAppBadge(n) : navigator.clearAppBadge()).catch(() => { /* needs notification permission */ });
+}
+if ('serviceWorker' in navigator) navigator.serviceWorker.addEventListener('message', (e) => { if (e.data && e.data.type === 'open' && e.data.host && S.dev) openDetail(e.data.host, e.data.pane, 'all'); });
+
 // ---------------------------------------------------------------------------
 // 8. Hosts and keys views
 // ---------------------------------------------------------------------------
@@ -623,6 +681,7 @@ function startScan() {
 
 function paintKeysView(m) {
   const H = S.hosts, q = S.q;
+  m.append(notifyCard());
   const me = el('div', 'card');
   me.append(el('h2', null, 'This phone'));
   me.append(el('p', null, (S.dev ? S.dev.name : '?') + ' is paired with ' + ((q && q.host) || (S.hello && S.hello.name) || 'the host') + '.'));

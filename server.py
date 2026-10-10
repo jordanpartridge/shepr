@@ -39,6 +39,8 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.error
+import urllib.request
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, unquote, urlsplit
 
@@ -350,6 +352,8 @@ def note_seen(host, agents, now):
             if mt and mt < now:
                 t, basis = mt, "transcript"
         STATE["seen"][key] = {"t": t, "exact": exact_ok, "basis": basis}
+        if exact_ok:   # a transition we watched happen (not what was already true when the host started)
+            PUSH_EVENTS.append(a["agent_status"])
         changed = True
     for key in [k for k in STATE["seen"] if k.startswith(hid + "|") and k not in live]:
         del STATE["seen"][key]; changed = True
@@ -421,6 +425,9 @@ def poll_all():
         out_hosts.append(entry)
     with LOCK:
         SNAP.update(ts=time.time(), hosts=out_hosts, agents=out_agents, polls=SNAP["polls"] + 1)
+        events = PUSH_EVENTS[:]; PUSH_EVENTS.clear()
+    if events:
+        threading.Thread(target=dispatch_push, args=(events,), daemon=True).start()
 
 
 def shape_agent(host, a, ws):
@@ -1332,6 +1339,7 @@ def commit_host(plan):
     step = plan["steps"][0]
     if step["op"] == "revoke":
         mutate_devices(lambda devs: devs.pop(step["id"], None))
+        forget_push(step["id"])
         audit(plan, True, "")
         return {"ok": True, "sent": ["revoke"]}
     try:
@@ -1665,6 +1673,178 @@ def commit_wake(plan):
 
 
 
+
+# --------------------------------------------------------------------------------------------
+# push notifications. The host sends an EMPTY web push ("something changed") signed with its own VAPID key; the phone's
+# service worker then fetches the queue, signed with the phone's key, and decides what to say. So no message content ever
+# passes through Apple's servers, and no payload encryption is needed on the host.
+# --------------------------------------------------------------------------------------------
+VAPID_SUB = os.environ.get("SHEPR_VAPID_SUB", "https://github.com/nixfred/shepr")
+PUSH_HOSTS = ("web.push.apple.com", ".push.apple.com", "fcm.googleapis.com", "updates.push.services.mozilla.com", ".notify.windows.com")
+PUSH_EXTRA = {h.strip() for h in os.environ.get("SHEPR_PUSH_ALLOW", "").split(",") if h.strip()}   # host:port allowed over plain http (tests)
+PUSH_MIN_GAP_S = 20
+PUSH = {}            # device id -> {"sub": {...}, "prefs": {"blocked": bool, "done": bool}, "t": epoch}
+PUSH_LAST = {}       # device id -> when a push last went out (rate limit)
+PUSH_EVENTS = []     # "blocked" / "done" transitions seen by the poller since the last dispatch
+_vapid = {}
+
+
+def ecdsa_sign(d, msg):
+    """ES256 signature, raw r||s (what JWTs and WebCrypto use). Random nonce from the OS."""
+    z = int.from_bytes(hashlib.sha256(msg).digest(), "big")
+    while True:
+        k = secrets.randbelow(_N - 1) + 1
+        r = _mul(k, _G)[0] % _N
+        s = pow(k, -1, _N) * (z + r * d) % _N
+        if r and s:
+            return r.to_bytes(32, "big") + s.to_bytes(32, "big")
+
+
+def vapid_keys():
+    """This host's push identity, made once and kept 0600. Returns (private int, public key bytes 0x04||x||y)."""
+    with LOCK:
+        if not _vapid:
+            try:
+                with open(state_path("vapid.json")) as f:
+                    j = json.load(f)
+                d = int(j["d"], 16)
+            except (OSError, ValueError, KeyError):
+                d = secrets.randbelow(_N - 1) + 1
+                os.makedirs(STATE_DIR, mode=0o700, exist_ok=True)
+                fd = os.open(state_path("vapid.json"), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+                with os.fdopen(fd, "w") as f:
+                    json.dump({"d": format(d, "064x")}, f)
+            x, y = _mul(d, _G)
+            _vapid.update(d=d, pub=b"\x04" + x.to_bytes(32, "big") + y.to_bytes(32, "big"))
+        return _vapid["d"], _vapid["pub"]
+
+
+def vapid_jwt(aud):
+    d, _pub = vapid_keys()
+    head = b64u(json.dumps({"typ": "JWT", "alg": "ES256"}, separators=(",", ":")).encode())
+    body = b64u(json.dumps({"aud": aud, "exp": int(time.time()) + 12 * 3600, "sub": VAPID_SUB}, separators=(",", ":")).encode())
+    return f"{head}.{body}.{b64u(ecdsa_sign(d, (head + '.' + body).encode()))}"
+
+
+def push_endpoint_ok(url):
+    """Only the real push services (and, in tests, hosts named in SHEPR_PUSH_ALLOW). The host will POST to this URL, so it
+    must never be something a phone can aim at an internal address."""
+    try:
+        u = urlsplit(url)
+    except ValueError:
+        return False
+    if len(url) > 700 or u.username or u.password or not u.hostname:
+        return False
+    hostport = u.netloc.lower()
+    if u.scheme == "http":
+        return hostport in PUSH_EXTRA
+    if u.scheme != "https" or (u.port not in (None, 443)):
+        return hostport in PUSH_EXTRA
+    h = u.hostname.lower()
+    return any(h == p or (p.startswith(".") and h.endswith(p)) for p in PUSH_HOSTS) or hostport in PUSH_EXTRA
+
+
+def load_push():
+    try:
+        with open(state_path("push.json")) as f:
+            PUSH.clear(); PUSH.update(json.load(f))
+    except (OSError, ValueError):
+        pass
+
+
+def save_push():
+    os.makedirs(STATE_DIR, mode=0o700, exist_ok=True)
+    fd = os.open(state_path("push.json.tmp"), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        json.dump(PUSH, f)
+    os.replace(state_path("push.json.tmp"), state_path("push.json"))
+
+
+def forget_push(dev_id):
+    with LOCK:
+        if PUSH.pop(dev_id, None) is not None:
+            try:
+                save_push()
+            except OSError:
+                pass
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *a, **k):
+        return None
+
+
+def send_push(dev_id):
+    """One empty push to one device. Returns the HTTP status, or None if nothing was sent. 404/410 mean the phone dropped it."""
+    with LOCK:
+        ent = PUSH.get(dev_id)
+        sub = (ent or {}).get("sub") or {}
+    ep = sub.get("endpoint")
+    if not ep or not push_endpoint_ok(ep):
+        return None
+    u = urlsplit(ep)
+    _d, pub = vapid_keys()
+    req = urllib.request.Request(ep, data=b"", method="POST", headers={
+        "Authorization": f"vapid t={vapid_jwt(f'{u.scheme}://{u.netloc}')}, k={b64u(pub)}",
+        "TTL": "3600", "Urgency": "high", "Content-Length": "0"})
+    try:
+        code = urllib.request.build_opener(_NoRedirect).open(req, timeout=10).status
+    except urllib.error.HTTPError as e:
+        code = e.code
+    except OSError as e:
+        print(f"shepr: push to {dev_id[:6]} failed: {e}", file=sys.stderr, flush=True)
+        return None
+    PUSH_LAST[dev_id] = time.time()
+    if code in (404, 410):
+        forget_push(dev_id)
+    elif code >= 300:
+        print(f"shepr: push service answered {code} for {dev_id[:6]}", file=sys.stderr, flush=True)
+    return code
+
+
+def dispatch_push(events):
+    """A blocked or finished agent was just seen. Tell every phone that asked for that kind of news, at most once per
+    PUSH_MIN_GAP_S each (the phone looks at the whole queue anyway, so one push covers any number of changes)."""
+    kinds = set(events)
+    with LOCK:
+        targets = [(d, e) for d, e in PUSH.items() if any((e.get("prefs") or {}).get(k) for k in kinds)]
+    for dev_id, _e in targets:
+        if time.time() - PUSH_LAST.get(dev_id, 0) < PUSH_MIN_GAP_S:
+            continue
+        send_push(dev_id)
+
+
+def push_config(dev_id):
+    _d, pub = vapid_keys()
+    with LOCK:
+        ent = PUSH.get(dev_id)
+    return {"key": b64u(pub), "subscribed": bool(ent), "prefs": (ent or {}).get("prefs") or {"blocked": True, "done": False}}
+
+
+def push_subscribe(dev_id, body):
+    sub = body.get("subscription")
+    if not isinstance(sub, dict) or not isinstance(sub.get("endpoint"), str) or not push_endpoint_ok(sub["endpoint"]):
+        raise HerdrError("bad_endpoint", "that is not a push address Shepr will send to")
+    keys = sub.get("keys") if isinstance(sub.get("keys"), dict) else {}
+    clean = {"endpoint": sub["endpoint"], "keys": {k: str(keys.get(k, ""))[:200] for k in ("p256dh", "auth")}}
+    prefs = body.get("prefs") if isinstance(body.get("prefs"), dict) else {}
+    with LOCK:
+        old = (PUSH.get(dev_id) or {}).get("prefs") or {"blocked": True, "done": False}
+        PUSH[dev_id] = {"sub": clean, "t": int(time.time()), "prefs": {"blocked": bool(prefs.get("blocked", old["blocked"])), "done": bool(prefs.get("done", old["done"]))}}
+        save_push()
+    return push_config(dev_id)
+
+
+def push_set_prefs(dev_id, body):
+    with LOCK:
+        ent = PUSH.get(dev_id)
+        if not ent:
+            raise HerdrError("not_subscribed", "this phone is not subscribed to notifications")
+        ent["prefs"] = {"blocked": bool(body.get("blocked", ent["prefs"]["blocked"])), "done": bool(body.get("done", ent["prefs"]["done"]))}
+        save_push()
+    return push_config(dev_id)
+
+
 # --------------------------------------------------------------------------------------------
 # photos and files from the phone: stored privately on THIS host, the path comes back, and the person sends it to an agent
 # through the normal confirm sheet. Nothing is sent to an agent by uploading.
@@ -1901,6 +2081,20 @@ class Handler(SimpleHTTPRequestHandler):
                 return self.json_out(200, out)
             if post and u.path == "/api/hosts/scan":
                 return self.json_out(200, {"started": start_scan()})
+            if u.path == "/api/push/config" and not post:
+                return self.json_out(200, push_config(viewer))
+            if post and u.path == "/api/push/subscribe":
+                return self.json_out(200, push_subscribe(viewer, body))
+            if post and u.path == "/api/push/prefs":
+                return self.json_out(200, push_set_prefs(viewer, body))
+            if post and u.path == "/api/push/unsubscribe":
+                forget_push(viewer)
+                return self.json_out(200, push_config(viewer))
+            if post and u.path == "/api/push/test":
+                code = send_push(viewer)
+                if code is None:
+                    raise HerdrError("not_subscribed", "this phone is not subscribed, or its push address is not allowed")
+                return self.json_out(200, {"ok": 200 <= code < 300, "status": code})
             if post and u.path == "/api/upload":
                 if need_host(q.get("host", ""))["kind"] != "local":
                     raise HerdrError("remote_unsupported", "photos and files can only be sent to sessions on this host: the file is stored here")
@@ -2036,6 +2230,7 @@ def cli_revoke(a):
     mutate_devices(drop)
     if "err" in res:
         sys.exit(res["err"])
+    load_push(); forget_push(res["id"])
     print(f"revoked {res['name']} ({res['id']}). That phone is signed out now.")
     return 0
 
@@ -2089,6 +2284,7 @@ def main():
     except OSError:
         pass
     devices()
+    load_push()
     threading.Thread(target=poller, daemon=True).start()
     handler = functools.partial(Handler, directory=HERE)
     srv = CappedServer((a.bind, a.port), handler)
