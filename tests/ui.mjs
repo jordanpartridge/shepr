@@ -773,17 +773,18 @@ const browser = await chromium.launch({ executablePath: '/usr/bin/chromium', arg
     await tap(page, '.tab[data-view=waiting]'); await page.waitForTimeout(300);
   }
 
-  // ---- subscription budget under the radar (Burn Bar's numbers) and unsent drafts that survive moving between sessions
+  // ---- subscription budget (the Subs page, from a usage fixture) and unsent drafts that survive moving between sessions
   {
     const now = Date.now(), H = 3600000, D = 24 * H;
-    const row = (label, used, win, left) => ({ label, percent: used, resetsAt: new Date(now + left).toISOString(), pace: { windowMs: win, resetsMs: now + left, elapsed: 1 - left / win, projected: used / (1 - left / win), dryAt: 0,
-      series: Array.from({ length: 20 }, (_, i) => { const e = (1 - left / win) * (i + 1) / 20; return [e, used * (i + 1) / 20 * (0.8 + 0.2 * Math.sin(i))]; }) } });
-    const fx = { generatedAt: now, presence: { claude: true, codex: true, kimi: true, grok: true },
-      claude: { limitsLive: true, limitsMeasuredAt: now - 60000, limits: [row('Session (5-hour)', 0.02, 5 * H, 3.5 * H), row('Weekly (7-day)', 0.91, 7 * D, 1 * D), row('Fable Weekly', 0.34, 7 * D, 1 * D)] },
-      codex: { limitsLive: true, limitsMeasuredAt: now - 60000, limits: [row('Weekly (7-day)', 0.17, 7 * D, 3.6 * D)] },
-      kimi: { limitsLive: true, limitsMeasuredAt: now - 60000, limits: [row('Session (5-hour)', 0.0, 5 * H, 4 * H), row('Monthly (total)', 0.5, 30 * D, 15 * D), row('Monthly (code)', 0.5, 30 * D, 15 * D)] },
-      grok: { limitsLive: false, limitsMeasuredAt: now - 5 * H, limits: [row('Weekly (7-day)', 0.02, 7 * D, 4.7 * D)] } };
-    fs.writeFileSync(process.env.SHEPR_BURN || '/tmp/claude-1000/shepr-burn.json', JSON.stringify(fx));
+    const row = (label, used, win, left) => ({ label, used, resets_ms: now + left, window_ms: win, projected: used / (1 - left / win), dry_at: 0,
+      series: Array.from({ length: 20 }, (_, i) => { const e = (1 - left / win) * (i + 1) / 20; return [e, used * (i + 1) / 20 * (0.8 + 0.2 * Math.sin(i))]; }) });
+    const ag = (id, name, live, rows) => ({ id, name, live, measured_at: now - (live ? 60000 : 5 * H), status: '', help: '', tier: '', rows });
+    const fx = { available: true, measuring: false, reason: '', generated_at: now, now, agents: [   // the view usage.py produces, as a fixture (SHEPR_USAGE_FIXTURE)
+      ag('claude', 'Claude', true, [row('Session (5-hour)', 0.02, 5 * H, 3.5 * H), row('Weekly (7-day)', 0.91, 7 * D, 1 * D), row('Fable Weekly', 0.34, 7 * D, 1 * D)]),
+      ag('codex', 'Codex', true, [row('Weekly (7-day)', 0.17, 7 * D, 3.6 * D)]),
+      ag('kimi', 'Kimi', true, [row('Session (5-hour)', 0.0, 5 * H, 4 * H), row('Monthly (total)', 0.5, 30 * D, 15 * D)]),
+      ag('grok', 'Grok', false, [row('Weekly (7-day)', 0.02, 7 * D, 4.7 * D)])] };
+    fs.writeFileSync(process.env.SHEPR_USAGE_FIXTURE || '/tmp/claude-1000/shepr-usage.json', JSON.stringify(fx));
     // the radar page: the four counts on top (also its legend), the radar filling everything below, nothing to scroll
     await tap(page, '.tab[data-view=all]'); await page.waitForSelector('svg.radar'); await page.waitForTimeout(700);
     const rg = await page.evaluate(() => { const m = document.getElementById('main'), mr = m.getBoundingClientRect(), r = document.querySelector('svg.radar').getBoundingClientRect(), s = document.querySelector('.rstats').getBoundingClientRect();
@@ -978,6 +979,9 @@ const browser = await chromium.launch({ executablePath: '/usr/bin/chromium', arg
     const nd = await page.evaluate(() => { const c = (help) => window.shepr.subCard({ id: 'codex', name: 'Codex', live: true, rows: [], status: 'Codex limits unavailable', help }, 0, false).textContent;
       return { code: c('account/read'), advice: c('Run `codex login` to authenticate.') }; });
     check('subs: a card with no data shows why and a help sentence, but never a bare code like "account/read"', /Codex limits unavailable/.test(nd.code) && !/account\/read/.test(nd.code) && /Run `codex login` to authenticate\./.test(nd.advice));
+    const nd2 = await page.evaluate(() => { const c = window.shepr.subCard({ id: 'claude', name: 'Claude', live: true, rows: [], status: 'Not signed in here', help: 'Run `claude auth login` on this host and Shepr can read your plan usage.' }, 0, false);
+      return { verdict: c.querySelector('.sc-v').textContent, why: c.querySelector('.sc-l').textContent, fix: (c.querySelector('.sc-note.fix') || {}).textContent }; });
+    check('subs: a card Shepr cannot measure says NO DATA, then why in plain words, then what to do as its own dim line', nd2.verdict === 'NO DATA' && nd2.why === 'Not signed in here' && /^Run `claude auth login` on this host/.test(nd2.fix));
     const idl = await page.evaluate(() => { const a = window.shepr.S.q.agents.find((x) => x.status === 'idle' && x.agent === 'claude'); return a.host + '|' + a.pane; });
     await tap(page, `.item[data-key="${idl}"]`); await page.waitForSelector('#detail:not([hidden])'); await page.waitForSelector('#tail .tl', { timeout: 8000 }); await page.waitForTimeout(1800);
     const age = await page.evaluate(() => { const n = document.getElementById('dtime'); return { t: n.textContent, c: n.className }; });

@@ -16,9 +16,10 @@ read its CLAUDE.md first). The directory name is Fred's session name; the produc
 6. Law 17: the page never scrolls; lists scroll in their own box.
 7. Test against the isolated `hrtest` herdr session (`tests/fake-session.sh`). Never poke real agents to test.
 8. Bump `VERSION` in `sw.js` whenever the shell changes, or phones keep the old one.
+9. The subscription meter (`usage.py`) stands alone. It reads only Claude Code's own login, Codex's and Grok's own files and the user's Kimi key, and a token goes only to the provider it belongs to (Anthropic's usage endpoint: a read-only GET, never refreshed, never logged, never returned). It never reads another app's files (Burn Bar, Omarchy). `SHEPR_USAGE=0` turns it off.
 
 ## Where things live
 
-`server.py` is the whole backend and the `shepr` CLI. State is in `~/.local/state/shepr/`. herdr has no
+`server.py` is the backend and the `shepr` CLI; `usage.py` is the subscription meter (first-party, standard library only). State is in `~/.local/state/shepr/`. herdr has no
 timestamps, so `seen.json` is how "blocked for" works. Auth: device ECDSA key (pure-Python verify) plus the
 Tailscale owner header. See README.md.

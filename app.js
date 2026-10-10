@@ -8,7 +8,7 @@
      3. No timer, retry or "auto" anything ever sends. A failed send is reported, never repeated.
      4. The private key never leaves the phone: it is generated non-extractable and only signs. */
 'use strict';
-const BUILD = 'v35';   // keep equal to sw.js VERSION: shown in Keys and logged by the host, so you can see which app a phone is running
+const BUILD = 'v37';   // keep equal to sw.js VERSION: shown in Keys and logged by the host, so you can see which app a phone is running
 
 // ---------------------------------------------------------------------------
 // 1. Service worker. Without this, a dead tailnet shows Safari's error page and
@@ -680,7 +680,12 @@ function subCard(ag, i, enter) {
   const prim = rows[0], rough = !ag.live;
   const card = el('div', 'sc'); card.dataset.id = ag.id; card.style.setProperty('--i', i);
   const head = el('div', 'sc-h'), nm = el('span', 'sc-n', ag.name), vd = el('span', 'sc-v'); head.append(nm, vd); card.append(head);
-  if (!prim) { card.style.setProperty('--tone', 'var(--dim)'); vd.textContent = 'NO DATA'; card.append(el('div', 'sc-l wrap', [ag.status, /\s/.test(ag.help || '') ? ag.help : ''].filter(Boolean).join(' \u00b7 ') || 'No plan limits reported.')); return card; }
+  if (!prim) {   // installed but not measurable: say NO DATA, why in plain words, then what to do as its own dim line
+    card.style.setProperty('--tone', 'var(--dim)'); vd.textContent = 'NO DATA';
+    const why = ag.status || 'No plan limits reported.', fix = /\s/.test(ag.help || '') ? ag.help : '';   // a help text is a sentence; a bare token is a code, not advice
+    card.append(el('div', 'sc-l wrap plain', why)); if (fix) card.append(el('div', 'sc-note fix', fix));
+    return card;
+  }
   const mid = el('div', 'sc-m'), big = el('div', 'sc-pct'), num = el('span', 'sc-num'), gwrap = el('div', 'sc-g'), line = el('div', 'sc-l');
   big.append(num, el('small', null, '% used')); mid.append(big, gwrap); card.append(mid, line);
   const bars = rows.map((r) => { const w = el('div', 'sc-r'), nmx = el('span', 'sc-rn', budgetRowName(r.label)), tr = el('span', 'sc-bar'), fill = el('i'), tick = el('b'), tx = el('span', 'sc-rt'); tr.append(fill, tick); w.append(nmx, tr, tx); card.append(w); return { r, fill, tick, tx, w }; });

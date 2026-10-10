@@ -159,12 +159,16 @@ The **Subs** tab has one card per subscription (Claude, Codex, Kimi, Grok) and a
 card has the plan used so far, a burn-down graph (the dashed diagonal is an even spend; above it is over, and the dotted line is
 where your current rate lands at the reset) and a verdict: **BANKED 32%** when you have used less than the clock has,
 **BEHIND** when you are more than 5% past an even spend, **ON PACE**, or **SPENT**. Every window of the plan (the week, the 5-hour session, Fable weekly) is listed as a bar with a marker for the clock, and the
-countdown (how long the bank is, or when to come back if you stop now) ticks live. The page animates in once when you open it: the cards slide in, each curve draws itself, the bars fill and the numbers climb (Reduce Motion skips that). The numbers come from
-[Burn Bar](https://github.com/nixfred/burnbar), which measures each plan on the host; Shepr only reads its file
-(`SHEPR_BURN` overrides the path), so without Burn Bar the rows say so instead of guessing. Grok only reports its quota when it
-starts, so its figures carry a `~`.
+countdown (how long the bank is, or when to come back if you stop now) ticks live. The page animates in once when you open it: the cards slide in, each curve draws itself, the bars fill and the numbers climb (Reduce Motion skips that). The numbers are measured by Shepr itself (`usage.py`), on the host, and need no other app:
 
-The page opens with one line of advice (Burn Bar's own rules): **USE CODEX NEXT**, and why (`32% of its week is banked, about 3d ahead, resets in 4d`), or **USE IT NOW** when a reset is under a day away with budget unspent, or **NOTHING HAS ROOM**. Only a subscription that is ahead of an even spend is ever suggested, one whose 5-hour window is nearly full never is, a snapshot such as Grok needs a bigger margin, and with fewer than two subscriptions there is nothing to choose between, so the line is not shown. Under it, which ones are resting and for how long.
+- **Claude**: Claude Code's own login file is read, and its token is sent to Anthropic's usage endpoint (a read-only GET over HTTPS) and nowhere else. It is never refreshed by Shepr, never logged and never sent to the phone.
+- **Codex**: its own session files, which record the plan limits on every turn.
+- **Grok**: the credits line it logs when it starts.
+- **Kimi**: only when `KIMI_API_KEY` is set, in Shepr's environment or as that one line in `~/.env` (nothing else in that file is read).
+
+A provider that is not installed is not shown. One that is installed but cannot be read says why on its card (`Sign-in expired`, `Not signed in here`, rate limited). Codex and Grok write their figures only when they run, so after 20 minutes their numbers carry a `~` and the card says when they were measured. The history behind the graphs is Shepr's own (`usage-samples.jsonl`, private to you, pruned), so a new install draws its curves from the day it starts. `SHEPR_USAGE=0` turns the meter off entirely. The pace rules (even spend, banked, the burn-down, the occasional friendly reset) are ported from [Burn Bar](https://github.com/nixfred/burnbar), which does the same job in an Omarchy bar; Shepr does not read Burn Bar's or Omarchy's files.
+
+The page opens with one line of advice (the rules Burn Bar uses, ported): **USE CODEX NEXT**, and why (`32% of its week is banked, about 3d ahead, resets in 4d`), or **USE IT NOW** when a reset is under a day away with budget unspent, or **NOTHING HAS ROOM**. Only a subscription that is ahead of an even spend is ever suggested, one whose 5-hour window is nearly full never is, a snapshot such as Grok needs a bigger margin, and with fewer than two subscriptions there is nothing to choose between, so the line is not shown. Under it, which ones are resting and for how long.
 
 ### A live screen
 
@@ -265,14 +269,15 @@ preview-and-confirm sheet and run `herdr machine add|enable|disable`.
 
 ```
 server.py            static files, /ping, /api, and the shepr CLI (pair|devices|revoke). Standard library only.
+usage.py             the subscription meter: Claude, Codex, Grok and Kimi plan usage, measured on the host. Standard library only.
 index.html app.css app.js sw.js manifest.webmanifest
 icons/               logo.svg, app icons, launch images (iOS shows these before any code runs)
 vendor/jsQR.js       the one third-party file: Safari has no BarcodeDetector. Apache-2.0, see vendor/README.md
 docs/img/            the graphics above (hand-built SVG) and real screenshots
-tests/               ui.mjs, sw_offline.mjs, format.mjs, pair_cli_test.py, fake-session.sh, shots.mjs
+tests/               ui.mjs, sw_offline.mjs, format.mjs, pair_cli_test.py, usage_test.py, fake-session.sh, shots.mjs
 ```
 
-State: `~/.local/state/shepr/` (`devices.json`, `seen.json`, `pairing.json`, `sends.jsonl` audit log), mode 0600.
+State: `~/.local/state/shepr/` (`devices.json`, `seen.json`, `pairing.json`, `usage-samples.jsonl`, `sends.jsonl` audit log), mode 0600.
 Logs: `journalctl --user -u shepr -f`. The app shell is fetched network-first (2.5 s, then
 cache) so a change shows on the next open and the app still opens offline.
 The host also announces the current build (`/api/hello`, `/api/queue`). A Home Screen app can stay alive in iOS

@@ -269,37 +269,27 @@ check("dead host: asking again while its poll is still running does not start a 
 time.sleep(2.6)
 check("dead host: when it finally answers it appears, as down, next to the live host (order kept)", [(h["id"], h["status"]) for h in srv.SNAP["hosts"]] == [("gus", "ok"), ("vic", "down")] and len(srv.SNAP["agents"]) == 1)
 
-# ---- subscription budget: read from Burn Bar's file, never trusted
-import tempfile
-bd = tempfile.mkdtemp()
-def burn(content, raw=False):
-    f = os.path.join(bd, "h.json"); open(f, "w").write(content if raw else json.dumps(content)); srv.BURN_FILE = f
-srv.BURN_FILE = os.path.join(bd, "missing.json")
+# ---- subscription budget: Shepr measures it itself (usage.py); the endpoint just hands over the meter's view
+fixture = os.path.join(tempfile.mkdtemp(), "usage.json")
+srv.USAGE_FIXTURE = fixture
+srv.USAGE_FIXTURE = os.path.join(tempfile.mkdtemp(), "missing.json")
 v = srv.budget_view()
-check("budget: no Burn Bar file says so plainly instead of failing", v["available"] is False and "Burn Bar" in v["reason"] and v["agents"] == [])
-burn("{not json", raw=True)
-check("budget: a corrupt file is unavailable, not a crash", srv.budget_view()["available"] is False)
-burn([1, 2, 3])
-check("budget: a file that is not an object is unavailable", srv.budget_view()["available"] is False)
-row = lambda label, used, **p: {"label": label, "percent": used, "pace": dict(windowMs=604800000, resetsMs=2000000000000, projected=0.4, series=[[0, 0], [0.5, used / 2], [1, used]], **p)}
-burn({"generatedAt": 1, "presence": {"claude": True, "codex": False, "kimi": True, "grok": True},
-      "claude": {"limitsLive": True, "limitsMeasuredAt": 5, "limits": [row("Weekly (7-day)", 0.91), row("Weekly (7-day)", 0.91)]},
-      "codex": {"limits": [row("Weekly", 0.1)]},
-      "kimi": {"limits": [row("Monthly (total)", 0.5), row("Monthly (code)", 0.5)]},
-      "grok": {"limitsLive": False, "limits": [row("Weekly", 0.02)]}})
+check("budget: a missing fixture says so instead of failing", v["available"] is False and v["agents"] == [])
+srv.USAGE_FIXTURE = fixture
+open(fixture, "w").write("{not json")
+check("budget: a corrupt fixture is unavailable, not a crash", srv.budget_view()["available"] is False)
+open(fixture, "w").write("[1, 2, 3]")
+check("budget: a fixture that is not an object is unavailable", srv.budget_view()["available"] is False)
+open(fixture, "w").write(json.dumps({"available": True, "agents": [{"id": "claude", "name": "Claude", "rows": []}], "now": 1}))
+v = srv.budget_view(now=5.0)
+check("budget: a fixture is returned as it is, with the current time put on it", v["available"] is True and v["agents"][0]["id"] == "claude" and v["now"] == 5000)
+open(fixture, "w").write(" " * (srv.USAGE_FIXTURE_MAX + 10))
+check("budget: an oversized fixture is refused", srv.budget_view()["available"] is False)
+srv.USAGE_FIXTURE = None
 v = srv.budget_view()
-check("budget: Claude, Kimi and Grok are returned in order; Codex is left out when Burn Bar says it is absent", [a["id"] for a in v["agents"]] == ["claude", "kimi", "grok"])
-check("budget: the same meter reported twice is shown once", [len(a["rows"]) for a in v["agents"]] == [1, 1, 1])
-check("budget: Grok is marked a snapshot (live false) so the phone shows its numbers as rough", [a["live"] for a in v["agents"]] == [True, True, False])
-burn({"claude": {"limits": [{"label": "x" * 500, "percent": "lots", "pace": {}}, {"label": "ok", "percent": float("nan")}, {"label": "big", "percent": 9e9}, {"label": "neg", "percent": -1},
-      {"label": "evil<script>", "percent": 0.5, "pace": {"resetsMs": "soon", "windowMs": None, "series": "no", "projected": [1]}}], "limitsMeasuredAt": "yesterday", "limitsStatus": "s" * 999}})
-try:
-    v = srv.budget_view(); rows = v["agents"][0]["rows"]
-    check("budget: hostile numbers and strings are dropped or capped, never passed on", len(rows) == 1 and rows[0]["label"] == "evil<script>" and rows[0]["series"] == [] and rows[0]["resets_ms"] == 0 and len(v["agents"][0]["status"]) <= 120 and v["agents"][0]["measured_at"] == 0)
-except Exception as e:
-    check("budget: hostile content did not crash: %r" % e, False)
-burn({"claude": {"limits": [row("Weekly", 0.5)]}}); open(srv.BURN_FILE, "a").write(" " * (srv.BURN_MAX_BYTES + 10))
-check("budget: an oversized file is refused", srv.budget_view()["available"] is False)
+check("budget: with no fixture the real meter answers at once, without waiting on any network (nothing has been measured yet)", isinstance(v, dict) and "agents" in v and "available" in v and v.get("measuring") in (True, False))
+src = open(os.path.join(here, "..", "server.py")).read() + open(os.path.join(here, "..", "usage.py")).read()
+check("budget: Shepr reads no Burn Bar or Omarchy file: neither the path nor the variable is in the code", ".local/state/omarchy" not in src and "SHEPR_BURN" not in src and "burnbar/history" not in src)
 
 
 # ---- model and effort: /model <name> and /effort <level>, only to a Claude session waiting for its next prompt

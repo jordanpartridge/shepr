@@ -46,6 +46,8 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, unquote, urlsplit
 
 HERE = os.path.dirname(os.path.realpath(__file__))   # realpath: `shepr` is a symlink to this file
+sys.path.insert(0, HERE)   # usage.py sits beside this file, whichever way it was started or imported
+import usage  # noqa: E402
 HERDR = os.environ.get("HERDR_BIN", "herdr")
 LOCAL = os.environ.get("SHEPR_LABEL") or socket.gethostname().split(".")[0]
 READONLY = os.environ.get("SHEPR_READONLY") == "1"
@@ -2075,68 +2077,28 @@ def prune_waits():
         os.replace(state_path("waits.jsonl.tmp"), state_path("waits.jsonl"))
 
 
-# ---- subscription budget: how much of each plan is used, and whether that is ahead of or behind an even spend. Burn Bar
-# (the Omarchy plugin) already measures this on the host and writes it to one JSON file; this only reads it, so there is one
-# source of truth and Shepr never touches a provider's account.
-BURN_FILE = os.environ.get("SHEPR_BURN") or os.path.join(os.path.expanduser("~"), ".local", "state", "omarchy", "burnbar", "history.json")
-BURN_AGENTS = (("claude", "Claude"), ("codex", "Codex"), ("kimi", "Kimi"), ("grok", "Grok"))
-BURN_MAX_BYTES = 2_000_000
-
-
-def _num(v, lo, hi, dflt=-1.0):
-    return float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) and lo <= v <= hi else dflt
-
-
-def _thin(series, keep=36):
-    """The burndown as [[elapsed, used]] pairs, thinned to at most `keep` points (first and last always kept)."""
-    pts = [[round(_num(p[0], 0, 1.5, 0.0), 4), round(_num(p[1], 0, 1.5, 0.0), 4)] for p in (series or [])
-           if isinstance(p, (list, tuple)) and len(p) == 2]
-    if len(pts) <= keep:
-        return pts
-    step = (len(pts) - 1) / float(keep - 1)
-    return [pts[round(i * step)] for i in range(keep)]
+# ---- subscription budget: how much of each plan is used, and whether that is ahead of or behind an even spend. Shepr measures it itself
+# (usage.py: Claude Code's own login to Anthropic's usage endpoint, Codex's and Grok's own files, Kimi's endpoint when a key is set), so it works
+# without any other app. SHEPR_USAGE=0 switches it off. SHEPR_USAGE_FIXTURE is for tests only: a view in this same format, returned as it is.
+USAGE_FIXTURE = os.environ.get("SHEPR_USAGE_FIXTURE")
+USAGE_FIXTURE_MAX = 2_000_000
+METER = usage.Meter(STATE_DIR, CLAUDE_HOME)
 
 
 def budget_view(now=None):
-    """Claude and Codex plan usage from Burn Bar's file. used and elapsed are 0..1 fractions of the plan and of its window;
-    the phone works out banked / behind from them with the clock, so the countdowns tick between refreshes."""
     now = now if now is not None else time.time()
+    if not USAGE_FIXTURE:
+        return METER.view()
     try:
-        if os.stat(BURN_FILE).st_size > BURN_MAX_BYTES:
+        if os.stat(USAGE_FIXTURE).st_size > USAGE_FIXTURE_MAX:
             raise ValueError("too large")
-        with open(BURN_FILE) as fh:
+        with open(USAGE_FIXTURE) as fh:
             d = json.load(fh)
     except (OSError, ValueError):
-        return {"available": False, "reason": "Burn Bar has not written its usage file on this host.", "agents": [], "now": int(now * 1000)}
-    if not isinstance(d, dict):
-        return {"available": False, "reason": "Burn Bar's usage file is not readable.", "agents": [], "now": int(now * 1000)}
-    pres = d.get("presence") if isinstance(d.get("presence"), dict) else {}
-    agents = []
-    for key, name in BURN_AGENTS:
-        a = d.get(key)
-        if not isinstance(a, dict) or pres.get(key) is False:
-            continue
-        rows, seen = [], set()
-        for l in (a.get("limits") if isinstance(a.get("limits"), list) else [])[:8]:
-            if not isinstance(l, dict):
-                continue
-            used = _num(l.get("percent"), 0, 1.5)
-            if used < 0:
-                continue
-            pace = l.get("pace") if isinstance(l.get("pace"), dict) else {}
-            same = (round(used, 4), pace.get("resetsMs"), pace.get("windowMs"))
-            if same in seen:   # Kimi reports "total" and "code" as one meter twice
-                continue
-            seen.add(same)
-            rows.append({"label": str(l.get("label") or "")[:40], "used": round(min(1.0, used), 4),
-                         "resets_ms": int(_num(pace.get("resetsMs"), 0, 4e12, 0)), "window_ms": int(_num(pace.get("windowMs"), 0, 4e10, 0)),
-                         "projected": round(_num(pace.get("projected"), 0, 50), 3), "dry_at": int(_num(pace.get("dryAt"), 0, 4e12, 0)),
-                         "series": _thin(pace.get("series"))})
-        agents.append({"id": key, "name": name, "rows": rows, "live": a.get("limitsLive") is not False,
-                       "measured_at": int(_num(a.get("limitsMeasuredAt"), 0, 4e12, 0)), "status": str(a.get("limitsStatus") or "")[:120],
-                       "help": str(a.get("limitsHelp") or "")[:160]})
-    return {"available": bool(agents), "reason": "" if agents else "Burn Bar found no Claude or Codex plan on this host.",
-            "generated_at": int(_num(d.get("generatedAt"), 0, 4e12, 0)), "now": int(now * 1000), "agents": agents}
+        d = None
+    if not isinstance(d, dict) or not isinstance(d.get("agents"), list):
+        return {"available": False, "measuring": False, "reason": "The usage fixture is missing or not readable.", "agents": [], "now": int(now * 1000)}
+    return dict(d, now=int(now * 1000))
 
 
 def ledger_view(now=None, agents=None):
@@ -2612,6 +2574,8 @@ def main():
     load_push()
     prune_waits()
     threading.Thread(target=poller, daemon=True).start()
+    if not USAGE_FIXTURE:
+        threading.Thread(target=METER.loop, daemon=True).start()   # the subscription meter, on its own slow clock
     handler = functools.partial(Handler, directory=HERE)
     srv = CappedServer((a.bind, a.port), handler)
     print(f"shepr: serving {HERE} on http://{a.bind}:{a.port} as {LOCAL} "
