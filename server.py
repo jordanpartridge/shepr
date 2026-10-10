@@ -52,7 +52,7 @@ READONLY = os.environ.get("SHEPR_READONLY") == "1"
 POLL_S = float(os.environ.get("SHEPR_POLL", "15"))
 STATE_DIR = os.environ.get("SHEPR_STATE") or os.path.expanduser("~/.local/state/shepr")
 CLAUDE_HOME = os.environ.get("CLAUDE_HOME") or os.path.expanduser("~/.claude")
-NONCE_TTL_S = 90
+NONCE_TTL_S = 300   # a phone user reads the sheet; the preview is also bound to state_change_seq, so a longer wait cannot approve a stale screen
 TAIL_MAX_BYTES = 48 * 1024
 
 PANE_RE = re.compile(r"^w[0-9A-Za-z]+:p[0-9A-Za-z]+$")
@@ -68,6 +68,18 @@ APPROVE_RE = re.compile(r"^(yes|allow|approve|accept|proceed|always|trust|contin
 # ctrl+c twice quits Claude Code and that is not something to do from a thumb.
 KEY_NAMED = {"up", "down", "left", "right", "enter", "esc", "tab", "shift+tab", "space", "backspace"}
 KEY_CHAR = re.compile(r"^[0-9A-Za-z]$")
+# Claude Code's own keyboard hints that do nothing in Shepr ("Press up to edit queued messages", "(ctrl+o to expand)") are hidden from the
+# tail; the one that matters, "ctrl+enter to send now", becomes the Send now button.
+QUEUED_RE = re.compile(r"^\s*ctrl\+enter to send now\s*$", re.I | re.M)
+HINT_LINE_RE = re.compile(r"^\s*(?:\u276f\s*)?(?:Press up to edit queued messages|ctrl\+enter to send now)\s*$", re.I)
+HINT_INLINE_RE = re.compile(r"\s*\((?:ctrl|shift)\+[a-z]+ to (?:expand|show|toggle|view|edit)[^)]*\)", re.I)
+
+
+def clean_tail(text):
+    """The pane text without keyboard hints that cannot be used from the phone, and whether a message is queued."""
+    queued = bool(QUEUED_RE.search(text))
+    lines = [HINT_INLINE_RE.sub("", l) for l in text.split("\n") if not HINT_LINE_RE.match(l)]
+    return "\n".join(lines), queued
 
 LOCK = threading.RLock()
 SNAP = {"ts": 0.0, "hosts": [], "agents": [], "polls": 0}
@@ -640,7 +652,7 @@ def build_plan(body):
     if body.get("kind") == "new_project":
         return plan_new_project(body)
     kind = body.get("kind")
-    if kind not in ("text", "keys", "choose", "multi", "model", "effort"):
+    if kind not in ("text", "keys", "choose", "multi", "model", "effort", "sendnow"):
         raise HerdrError("bad_kind", f"this host's Shepr does not know the action {str(kind)[:30]!r}. It is older than the app on your "
                                      "phone: restart Shepr on the host so the two match.")
     host = need_host(str(body.get("host", "")))
@@ -659,6 +671,17 @@ def build_plan(body):
         if status == "blocked":
             if "\n" in text:
                 raise HerdrError("bad_text", "a blocked agent is at a dialog: one line only, a newline would submit early")
+            # A numbered menu reads typed characters as keystrokes (a digit picks that option), so words typed at one must never be
+            # sent as they are. Fred, 2026-10-10: a sentence sent from the message box picked option 1 of a question.
+            menu = parse_menu(read_tail(host, pane, 80))
+            if menu:
+                free = next((o for o in menu["options"] if o["free"]), None)
+                if not free:
+                    raise HerdrError("menu_text", "this question takes a numbered pick, so typed words would be read as keystrokes. Tap an option instead.")
+                if menu.get("multi"):
+                    ticked = [o["n"] for o in menu["options"] if o["checked"] and not o["free"] and o["n"] <= 9]
+                    return build_plan(dict(body, kind="multi", picks=ticked, advance=True, text=text))
+                return build_plan(dict(body, kind="choose", option=free["n"], text=text))
             steps = [{"op": "text", "text": text}, {"op": "keys", "keys": ["enter"]}]
             lines = [("Types into the dialog", text), ("Then presses", "⏎")]
         else:
@@ -666,6 +689,15 @@ def build_plan(body):
             lines = [("Sends as a prompt", text)]
             if status == "working":
                 lines.append(("Note", "the agent is working right now; Claude queues this until it is free"))
+    elif kind == "sendnow":
+        # Claude Code shows "ctrl+enter to send now" under a message that is queued behind running work. This is the one ctrl chord the phone
+        # may send, and only while that line is on screen, so it can never land as a stray keystroke.
+        if a.get("agent") != "claude":
+            raise HerdrError("not_claude", "send now only works for Claude Code sessions")
+        if not QUEUED_RE.search(read_tail(host, pane, 60)):
+            raise HerdrError("nothing_queued", "no message is waiting in the queue of that session right now")
+        steps = [{"op": "keys", "keys": ["ctrl+enter"]}]
+        lines = [("Presses", "Ctrl+Enter"), ("Does", "Claude Code sends your queued message now instead of waiting for the current work to end")]
     elif kind in ("model", "effort"):
         # Claude Code takes /model <name> and /effort <level> as plain arguments (verified on 2.1.293): no menu, no model call.
         if a.get("agent") != "claude":
@@ -1824,6 +1856,7 @@ PUSH_EXTRA = {h.strip() for h in os.environ.get("SHEPR_PUSH_ALLOW", "").split(",
 PUSH_MIN_GAP_S = 20
 PUSH = {}            # device id -> {"sub": {...}, "prefs": {"blocked": bool, "done": bool}, "t": epoch}
 PUSH_LAST = {}       # device id -> when a push last went out (rate limit)
+PUSH_STATUS = {}     # device id -> {at, code, why}: what the push service said to the last push, shown on the Keys screen
 PUSH_EVENTS = []     # "blocked" / "done" transitions seen by the poller since the last dispatch
 _vapid = {}
 
@@ -1913,7 +1946,7 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
-def send_push(dev_id):
+def send_push(dev_id, why="test"):
     """One empty push to one device. Returns the HTTP status, or None if nothing was sent. 404/410 mean the phone dropped it."""
     with LOCK:
         ent = PUSH.get(dev_id)
@@ -1934,6 +1967,8 @@ def send_push(dev_id):
         print(f"shepr: push to {dev_id[:6]} failed: {e}", file=sys.stderr, flush=True)
         return None
     PUSH_LAST[dev_id] = time.time()
+    PUSH_STATUS[dev_id] = {"at": int(time.time() * 1000), "code": code, "why": why}
+    print(f"shepr: push ({why}) to {dev_id[:6]}: the push service answered {code}", file=sys.stderr, flush=True)
     if code in (404, 410):
         forget_push(dev_id)
     elif code >= 300:
@@ -1950,14 +1985,15 @@ def dispatch_push(events):
     for dev_id, _e in targets:
         if time.time() - PUSH_LAST.get(dev_id, 0) < PUSH_MIN_GAP_S:
             continue
-        send_push(dev_id)
+        send_push(dev_id, why="+".join(sorted(kinds)))
 
 
 def push_config(dev_id):
     _d, pub = vapid_keys()
     with LOCK:
         ent = PUSH.get(dev_id)
-    return {"key": b64u(pub), "subscribed": bool(ent), "prefs": (ent or {}).get("prefs") or {"blocked": True, "done": False}}
+    return {"key": b64u(pub), "subscribed": bool(ent), "prefs": (ent or {}).get("prefs") or {"blocked": True, "done": False},
+            "last": PUSH_STATUS.get(dev_id)}
 
 
 def push_subscribe(dev_id, body):
@@ -2329,8 +2365,8 @@ class Handler(SimpleHTTPRequestHandler):
                     raise HerdrError("bad_pane", "not a pane id")
                 n = max(5, min(200, int(q.get("lines", "40"))))
                 a = get_agent(host, pane)
-                text = read_tail(host, pane, n)
-                return self.json_out(200, {"text": text, "lines": n, "menu": parse_menu(read_tail(host, pane, 80))
+                text, queued = clean_tail(read_tail(host, pane, n))
+                return self.json_out(200, {"text": text, "queued": queued, "lines": n, "menu": parse_menu(read_tail(host, pane, 80))
                                            if a["agent_status"] == "blocked" else None,
                                            "agent": shape_agent(host, a, {}), "at": time.time()})
             if not post and u.path == "/api/history":

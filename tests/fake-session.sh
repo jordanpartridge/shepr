@@ -38,6 +38,10 @@ case "${1:-}" in
   multi) H workspace list | python3 -c 'import json,sys;[print(w["workspace_id"]) for w in json.load(sys.stdin)["result"]["workspaces"] if w["label"]=="multi"]' | while read w; do H workspace close "$w" >/dev/null; done
     HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
     mk multi "$HOME/Projects/whats-next" blocked claude "Project customization walkthrough" "$HERE/sample-multi.txt" ;;
+  queued) for w in $(H workspace list | python3 -c 'import json,sys;[print(w["workspace_id"]) for w in json.load(sys.stdin)["result"]["workspaces"] if w["label"]=="queued"]'); do H workspace close "$w" >/dev/null; done
+    HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    mk queued "$HOME/Projects/whats-next" working claude "A long task with a message queued" "$HERE/sample-queued.txt" ;;
+  queued-rm) for w in $(H workspace list | python3 -c 'import json,sys;[print(w["workspace_id"]) for w in json.load(sys.stdin)["result"]["workspaces"] if w["label"]=="queued"]'); do H workspace close "$w" >/dev/null; done ;;
   asleep) mkdir -p /tmp/shepr-dormant /tmp/shepr-busy
     for w in $(H workspace list | python3 -c 'import json,sys;[print(w["workspace_id"]) for w in json.load(sys.stdin)["result"]["workspaces"] if w["label"] in ("dormant","busy")]'); do H workspace close "$w" >/dev/null; done
     H workspace create --label dormant --cwd /tmp/shepr-dormant >/dev/null     # a bare shell prompt, and a conversation on file for it

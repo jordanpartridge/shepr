@@ -1,0 +1,10 @@
+● Running the long check now.
+  ⎿  Running tests (ctrl+o to expand)
+
+❯ Second message: reply with the single word QUEUED-SECOND.
+  ctrl+enter to send now
+
+✶ Cogitating… (12s · ↓ 104 tokens)
+────────────────────────────────────────────────────────
+❯ Press up to edit queued messages
+────────────────────────────────────────────────────────

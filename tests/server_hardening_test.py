@@ -328,4 +328,52 @@ check("model: not while it is waiting on a question (that dialog would eat the t
 agent_is("codex", "idle")
 check("model: only Claude Code sessions", refused({"kind": "model", "value": "opus"}) == "not_claude")
 
+# ---- typed words at a numbered question, queued messages, and the hints that do nothing from a phone
+HERE = os.path.dirname(os.path.abspath(__file__))
+fx = lambda n: open(os.path.join(HERE, n)).read()
+srv.need_host = lambda h: {"id": "gus", "machine": None, "kind": "local", "enabled": True}
+srv.get_agent = lambda host, pane: {"agent": "claude", "agent_status": "blocked", "state_change_seq": 7, "agent_session": {"value": "s1"}}
+PLAIN = "Do you want to proceed?\n\u276f 1. Yes\n  2. Yes, and do not ask again\n  3. No\n\nEsc to cancel\n"
+srv.read_tail = lambda host, pane, n, **k: PLAIN
+try:
+    srv.build_plan({"kind": "text", "text": "I should be able to multi select here. I cant do 1 2 3", "host": "gus", "pane": "w1:p1"}); code = None
+except srv.HerdrError as e:
+    code = e.code
+check("typing: words at a numbered question with no typing row are refused, never typed (a digit would pick an option)", code == "menu_text")
+srv.read_tail = lambda host, pane, n, **k: fx("sample-free.txt")
+p = srv.build_plan({"kind": "text", "text": "my own answer", "host": "gus", "pane": "w1:p1"})
+st = srv.PLANS[p["nonce"]]["steps"]
+check("typing: with a 'Type something' row the words go into that row (arrow to it, the words, Enter), not at the cursor",
+      [x["op"] for x in st] == ["keys", "text", "keys"] and st[0]["keys"] == ["down", "down"] and st[1]["text"] == "my own answer" and st[2]["keys"] == ["enter"])
+srv.read_tail = lambda host, pane, n, **k: "Some prompt that is not a numbered menu\n> "
+p = srv.build_plan({"kind": "text", "text": "yes", "host": "gus", "pane": "w1:p1"})
+check("typing: a blocked agent that is NOT at a numbered menu still gets the words typed and Enter", [x["op"] for x in srv.PLANS[p["nonce"]]["steps"]] == ["text", "keys"])
+srv.get_agent = lambda host, pane: {"agent": "claude", "agent_status": "working", "state_change_seq": 8, "agent_session": {"value": "s1"}}
+srv.read_tail = lambda host, pane, n, **k: fx("sample-queued.txt")
+p = srv.build_plan({"kind": "sendnow", "host": "gus", "pane": "w1:p1"})
+check("send now: with a message queued it plans exactly Ctrl+Enter", srv.PLANS[p["nonce"]]["steps"] == [{"op": "keys", "keys": ["ctrl+enter"]}])
+srv.read_tail = lambda host, pane, n, **k: "just working\n"
+try:
+    srv.build_plan({"kind": "sendnow", "host": "gus", "pane": "w1:p1"}); code = None
+except srv.HerdrError as e:
+    code = e.code
+check("send now: refused when nothing is queued on screen, so Ctrl+Enter can never land as a stray key", code == "nothing_queued")
+srv.get_agent = lambda host, pane: {"agent": "codex", "agent_status": "working", "state_change_seq": 8, "agent_session": {"value": "s1"}}
+srv.read_tail = lambda host, pane, n, **k: fx("sample-queued.txt")
+try:
+    srv.build_plan({"kind": "sendnow", "host": "gus", "pane": "w1:p1"}); code = None
+except srv.HerdrError as e:
+    code = e.code
+check("send now: only for Claude Code", code == "not_claude")
+for k in ("ctrl+c", "ctrl+enter", "ctrl+d"):
+    try:
+        srv.build_plan({"kind": "keys", "keys": [k], "host": "gus", "pane": "w1:p1"}); code = None
+    except srv.HerdrError as e:
+        code = e.code
+    check(f"keys: {k} is still not a key the phone may send on its own", code in ("bad_keys",))
+text, queued = srv.clean_tail(fx("sample-queued.txt"))
+check("tail: the queued hint lines and the (ctrl+o to expand) fragment are removed, the queued message itself stays, and queued is reported",
+      queued and "Press up to edit" not in text and "send now" not in text and "ctrl+o" not in text and "QUEUED-SECOND" in text)
+check("tail: ordinary text that merely mentions the shortcut is left alone", srv.clean_tail("press ctrl+enter to send now, he said") == ("press ctrl+enter to send now, he said", False))
+
 sys.exit(0 if ok else 1)

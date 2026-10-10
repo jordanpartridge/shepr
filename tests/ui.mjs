@@ -449,6 +449,9 @@ const browser = await chromium.launch({ executablePath: '/usr/bin/chromium', arg
     await page.waitForSelector('#detail:not([hidden])'); await page.waitForSelector('#hist .hent', { timeout: 8000 }); await page.waitForTimeout(400);
     await noSide('session view (long pane text and long history)');
     await page.screenshot({ path: `${OUT}/z1-long-content.png` });
+    await page.click('#dback'); await page.waitForTimeout(300);   // a blocked numbered question refuses typed words now, so the long message goes to an idle session
+    const idl = await page.evaluate(() => { const a = window.shepr.S.q.agents.find((x) => x.status === 'idle' && x.agent === 'claude'); return a.host + '|' + a.pane; });
+    await tap(page, `.item[data-key="${idl}"]`); await page.waitForSelector('#detail:not([hidden])'); await page.waitForTimeout(400);
     await page.fill('#msg', LONG + ' ' + URL); await page.click('#send'); await page.waitForSelector('#sheet:not([hidden]) .kv'); await page.waitForTimeout(300);
     await noSide('confirm sheet (long message)');
     await page.click('#sheet .btns button:first-child'); await page.waitForTimeout(300);
@@ -608,7 +611,7 @@ const browser = await chromium.launch({ executablePath: '/usr/bin/chromium', arg
   {
     const TINY_PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64');
     await tap(page, '.tab[data-view=waiting]'); await page.waitForTimeout(400);
-    const key = await page.evaluate(() => { const a = window.shepr.S.q.agents.find((x) => x.status === 'blocked'); return a.host + '|' + a.pane; });
+    const key = await page.evaluate(() => { const a = window.shepr.S.q.agents.find((x) => x.status === 'idle' && x.agent === 'claude'); return a.host + '|' + a.pane; });   // idle: typed words are refused at a numbered question
     await tap(page, `.item[data-key="${key}"]`); await page.waitForSelector('#detail:not([hidden])'); await page.waitForTimeout(500);
     check('photo: the message bar has an attach button', !!(await page.$('#attachbtn')) && (await page.$eval('#attachbtn', (b) => b.getBoundingClientRect().height)) >= 44);
     await page.screenshot({ path: `${OUT}/p1-attach-button.png` });
@@ -825,7 +828,11 @@ const browser = await chromium.launch({ executablePath: '/usr/bin/chromium', arg
     const backK = async () => { await page.click('#dback'); await page.waitForTimeout(400); };
     await tap(page, '.tab[data-view=waiting]'); await page.waitForTimeout(300);
     await page.evaluate(() => localStorage.removeItem('shepr.drafts'));
-    await openK(keys[0]); await page.fill('#msg', 'half a thought for the first one');
+    await openK(keys[0]);
+    await page.click('#msg'); await page.keyboard.type('word '.repeat(80), { delay: 0 });
+    const sc = await page.evaluate(() => { const m = document.getElementById('msg'); return { atBottom: m.scrollTop + m.clientHeight >= m.scrollHeight - 3, h: m.getBoundingClientRect().height, tall: m.scrollHeight > m.clientHeight }; });
+    check('message box: typing a long message keeps what you are typing in view (the box scrolls to the end, up to five lines)', sc.tall && sc.atBottom && sc.h > 100 && sc.h <= 134);
+    await page.fill('#msg', 'half a thought for the first one');
     await backK(); await openK(keys[1]);
     check('drafts: another session starts with an empty box, not the first one\'s words', (await page.inputValue('#msg')) === '');
     await page.fill('#msg', 'second session words');
@@ -835,9 +842,85 @@ const browser = await chromium.launch({ executablePath: '/usr/bin/chromium', arg
     const stored = await page.evaluate(() => JSON.parse(localStorage.getItem('shepr.drafts') || '{}'));
     check('drafts: they are kept on the phone, so a reload does not lose them', Object.keys(stored).length === 2 && stored[keys[0]].t === 'half a thought for the first one');
     await page.fill('#msg', ''); await backK(); await openK(keys[0]); await backK();
+    // the Queue marks sessions that hold unsent words
+    await page.evaluate((k) => { window.shepr.drafts.put(k, 'half a thought\n/tmp/x/uploads/2026-10-10/ab12.png\nPhoto 1: a comment'); }, keys[0]);
+    await page.evaluate((k) => { window.shepr.drafts.put(k, 'second session words'); }, keys[1]);   // (the box of the second one was emptied above)
+    await page.click('.tab[data-view=all]'); await page.waitForTimeout(200); await page.click('.tab[data-view=waiting]'); await page.waitForSelector(`.item[data-key="${keys[0]}"]`);
+    const dtxt = await page.textContent(`.item[data-key="${keys[0]}"] .sub.draft`).catch(() => '');
+    check('drafts: a Queue row holding unsent words shows them with a pencil, and how many files are with them', dtxt === '✎ half a thought (+1 file)');
+    const d2 = await page.textContent(`.item[data-key="${keys[1]}"] .sub.draft`).catch(() => '');
+    check('drafts: each session shows its own unsent words, not another one\'s', d2 === '\u270e second session words');
+    await page.evaluate(([a, b]) => { window.shepr.drafts.put(a, ''); window.shepr.drafts.put(b, ''); }, keys);
     check('drafts: clearing the box forgets the draft', !(await page.evaluate(() => JSON.parse(localStorage.getItem('shepr.drafts') || '{}'))[keys[1]]));
     await page.fill('#msg', '').catch(() => {});
     await openK(keys[0]); await page.fill('#msg', ''); await backK();
+  }
+
+  // ---- radar: every dot carries its name
+  {
+    await tap(page, '.tab[data-view=all]'); await page.waitForSelector('svg.radar .rdot'); await page.waitForTimeout(600);
+    const lab = await page.evaluate(() => { const dots = [...document.querySelectorAll('svg.radar .rdot')]; return { dots: dots.length, labelled: dots.filter((d) => d.querySelector('text.rlbl')).length, inside: dots.every((d) => { const t = d.querySelector('text.rlbl'); if (!t) return false; const b = t.getBoundingClientRect(), r = document.querySelector('svg.radar').getBoundingClientRect(); return b.left >= r.left - 2 && b.right <= r.right + 2; }) }; });
+    console.log('   radar labels:', JSON.stringify(lab));
+    check('radar: every dot, whatever its state, carries its name, and no name runs off the radar', lab.dots >= 4 && lab.labelled === lab.dots && lab.inside);
+    // crowd it: twelve more sessions across the states, and no name may sit on another name, a dot, or a ring caption
+    const crowd = await page.evaluate(() => { const S = window.shepr, base = S.S.q.agents[0], names = ['Hourglass', 'gliff', 'mobs', 'Shepr', 'whats-next', 'omarchy.stories', 'clarity', 'burnbar', 'nixfredOS', 'lamplight', 'infomarchy', 'LightShow'];
+      const fakes = names.map((n, i) => Object.assign({}, base, { pane: 'wQ' + i + ':p1', status: ['blocked', 'done', 'working', 'idle'][i % 4], wlabel: n, for_s: 60 * (i + 1), seq: 900 + i }));
+      S.S.q.agents.push(...fakes); S.S.tab = 'all'; S.paintMain(); S.S.q.agents.splice(S.S.q.agents.length - fakes.length, fakes.length);
+      const box = (n) => n.getBoundingClientRect(), ov = (a, b) => a.left < b.right - 1 && a.right > b.left + 1 && a.top < b.bottom - 1 && a.bottom > b.top + 1;
+      const labels = [...document.querySelectorAll('svg.radar text.rlbl')], cores = [...document.querySelectorAll('svg.radar .rcore')], caps = [...document.querySelectorAll('svg.radar .rringlbl, svg.radar .rnum')];
+      let ll = 0, ld = 0, lc = 0;
+      labels.forEach((x, i) => { labels.forEach((y, j) => { if (j > i && ov(box(x), box(y))) ll++; }); cores.forEach((c) => { if (ov(box(x), box(c))) ld++; }); caps.forEach((c) => { if (ov(box(x), box(c))) lc++; }); });
+      return { dots: document.querySelectorAll('svg.radar .rdot').length, labels: labels.length, ll, ld, lc }; });
+    console.log('   crowded radar:', JSON.stringify(crowd));
+    check('radar: with seventeen dots every one still has a name, and no name overlaps another name, a dot or a ring caption', crowd.dots >= 16 && crowd.labels === crowd.dots && crowd.ll === 0 && crowd.ld === 0 && crowd.lc === 0);
+    await page.screenshot({ path: `${OUT}/r3-radar-crowded.png` });
+    await page.evaluate(() => window.shepr.paintMain());
+    await page.screenshot({ path: `${OUT}/r2-radar-names.png` });
+    await tap(page, '.tab[data-view=waiting]'); await page.waitForTimeout(300);
+  }
+
+  // ---- finished sessions you have opened are "looked at", per finish
+  {
+    const r = await page.evaluate(() => { const S = window.shepr, a0 = S.S.q.agents[0], fake = Object.assign({}, a0, { pane: 'wZZ:p9', status: 'done', seq: 777, wlabel: 'finisher' }), key = fake.host + '|' + fake.pane;
+      S.S.q.agents.push(fake); localStorage.removeItem('shepr.seen');
+      const before = [S.finished().length, S.finishedSeen().length]; S.seenStore.mark(key, 777); const after = [S.finished().length, S.finishedSeen().length];
+      S.paintMain(); const heads = [...document.querySelectorAll('#main .sec')].map((n) => n.textContent);
+      fake.seq = 778; const again = [S.finished().length, S.finishedSeen().length];
+      S.S.q.agents.pop(); localStorage.removeItem('shepr.seen'); S.paintMain(); return { before, after, heads, again }; });
+    check('looked at: a finished session starts as not yet looked at, and once opened moves to "Finished, looked at"', r.before.join() === '1,0' && r.after.join() === '0,1' && r.heads.some((h) => /Finished, looked at/.test(h)) && !r.heads.some((h) => /not yet looked at/.test(h)));
+    check('looked at: when it finishes again it is unread again', r.again.join() === '1,0');
+  }
+
+  // ---- a message queued behind running work: Send now, and Claude Code's hints that do nothing here are hidden
+  {
+    const fsh = new URL('./fake-session.sh', import.meta.url).pathname;
+    execFileSync('bash', [fsh, 'queued'], { env: ENV, encoding: 'utf8' });
+    await page.waitForFunction(() => window.shepr.S.q.agents.some((a) => a.wlabel === 'queued'), null, { timeout: 15000 }).catch(async () => { await page.click('#refresh'); await page.waitForTimeout(4500); });
+    const key = await page.evaluate(() => { const a = window.shepr.S.q.agents.find((x) => x.wlabel === 'queued'); return a.host + '|' + a.pane; });
+    await tap(page, '.tab[data-view=waiting]'); await page.waitForTimeout(300);
+    await tap(page, `.item[data-key="${key}"]`); await page.waitForSelector('#detail:not([hidden])'); await page.waitForSelector('#qrow:not([hidden])', { timeout: 8000 }).catch(() => {});
+    const tail = await page.textContent('#tail');
+    check('queued: "Press up to edit queued messages" and the ctrl hints, which do nothing in this app, are not shown', !/Press up to edit/i.test(tail) && !/ctrl\+enter to send now/i.test(tail) && !/ctrl\+o to expand/i.test(tail) && /QUEUED-SECOND/.test(tail));
+    check('queued: a Send now button appears for the queued message', !(await page.$eval('#qrow', (n) => n.hidden)) && /Send now/.test(await page.textContent('#qrow')));
+    await page.screenshot({ path: `${OUT}/q1-send-now.png` });
+    await page.click('#qrow .qgo'); await page.waitForSelector('#sheet:not([hidden]) .go', { timeout: 6000 });
+    const qt = await page.textContent('#sheet');
+    check('queued: Send now shows Ctrl+Enter and what it does before anything is pressed', /Ctrl\+Enter/.test(qt) && /queued message now/.test(qt));
+    await page.click('#sheet .btns button:not(.go)'); await page.waitForTimeout(300);
+    await page.click('#dback'); await page.waitForTimeout(300);
+    execFileSync('bash', [fsh, 'queued-rm'], { env: ENV, encoding: 'utf8' });
+  }
+
+  // ---- words typed at a numbered question are never sent as keystrokes
+  {
+    const bl = await page.evaluate(() => { const a = window.shepr.S.q.agents.find((x) => x.status === 'blocked' && x.wlabel === 'burnbar'); return a.host + '|' + a.pane; });
+    await tap(page, '.tab[data-view=waiting]'); await page.waitForTimeout(300);
+    await tap(page, `.item[data-key="${bl}"]`); await page.waitForSelector('#optrow button', { timeout: 8000 }); await page.waitForTimeout(400);
+    check('typing: at a numbered question with no typing row the box says to tap an option', /Tap an option/.test(await page.getAttribute('#msg', 'placeholder')));
+    await page.fill('#msg', 'I should be able to multi select here. I cant do 1 2 3'); await page.click('#send');
+    await page.waitForFunction(() => /numbered pick/.test(document.body.textContent), null, { timeout: 6000 }).catch(() => {});
+    check('typing: words sent at that question are refused with the reason, not typed into it', /numbered pick/.test(await page.textContent('body')) && (await page.$('#sheet:not([hidden]) .go')) === null);
+    await page.fill('#msg', ''); await page.click('#dback'); await page.waitForTimeout(300);
   }
 
   // ---- model and effort: a chip in the session header opens a sheet of buttons; the confirm sheet shows the exact line

@@ -8,7 +8,7 @@
      3. No timer, retry or "auto" anything ever sends. A failed send is reported, never repeated.
      4. The private key never leaves the phone: it is generated non-extractable and only signs. */
 'use strict';
-const BUILD = 'v32';   // keep equal to sw.js VERSION: shown in Keys and logged by the host, so you can see which app a phone is running
+const BUILD = 'v33';   // keep equal to sw.js VERSION: shown in Keys and logged by the host, so you can see which app a phone is running
 
 // ---------------------------------------------------------------------------
 // 1. Service worker. Without this, a dead tailnet shows Safari's error page and
@@ -310,12 +310,20 @@ const agents = () => (S.q ? S.q.agents : []);
 const byKey = (k) => agents().find((a) => keyOf(a) === k);
 const inHost = (a) => !S.host || a.host === S.host;
 const waiting = () => agents().filter((a) => a.status === 'blocked' && inHost(a));
-const finished = () => agents().filter((a) => a.status === 'done' && inHost(a));
+// A finished session you have opened is "looked at": it stays listed, but no longer says it is unread. Kept on this phone, per finish
+// (the state_change_seq), so the next time it finishes it is unread again.
+const seenStore = {
+  all() { const d = store.get('shepr.seen', {}); return d && typeof d === 'object' && !Array.isArray(d) ? d : {}; },
+  mark(k, seq) { const d = this.all(); if (d[k] && d[k].seq === seq) return; d[k] = { seq, at: Date.now() }; const ks = Object.keys(d).sort((x, y) => d[y].at - d[x].at); ks.slice(80).forEach((x) => delete d[x]); store.set('shepr.seen', d); },
+};
+const isSeen = (a) => a.status === 'done' && (seenStore.all()[keyOf(a)] || {}).seq === a.seq;
+const finished = () => agents().filter((a) => a.status === 'done' && !isSeen(a) && inHost(a));
+const finishedSeen = () => agents().filter((a) => a.status === 'done' && isSeen(a) && inHost(a));
 const byName = (a, b) => a.host.localeCompare(b.host) || nm(a).localeCompare(nm(b));
 const sleeping = () => agents().filter((a) => a.status === 'idle' && inHost(a)).sort(byName);
 const working = () => agents().filter((a) => a.status === 'working' && inHost(a)).sort(byName);
 // The Queue, in the order that matters: needs you, finished, working, and sleeping last.
-const queueList = () => waiting().concat(finished(), working(), sleeping());
+const queueList = () => waiting().concat(finished(), finishedSeen(), working(), sleeping());
 
 // ---------------------------------------------------------------------------
 // 6. Icon tab bar
@@ -387,6 +395,14 @@ function ageBox(a) {
   return box;
 }
 
+// One line saying what is waiting in a session's message box: your first words, and how many photos are with them.
+function draftGlance(text) {
+  if (!text || !text.trim()) return '';
+  const lines = text.split('\n').map((l) => l.trim()).filter(Boolean), isPath = (l) => /\/uploads\/[^\s]+\.(png|jpe?g|gif|webp|pdf|txt|md|log|json|csv)$/i.test(l);
+  const photos = lines.filter(isPath).length, words = lines.filter((l) => !isPath(l) && !/^Photo \d+: /.test(l))[0] || (lines.find((l) => /^Photo \d+: /.test(l)) || '').replace(/^Photo \d+: /, '');
+  const tail = photos ? ' (+' + photos + (photos === 1 ? ' file)' : ' files)') : '';
+  return ((words.length > 60 ? words.slice(0, 59) + '\u2026' : words) || 'unsent') + tail;
+}
 function itemNode(a, ctx, compact, idx) {
   const n = el('div', 'item ' + a.status + (compact ? ' compact' : ''));
   n.dataset.key = keyOf(a);
@@ -406,7 +422,9 @@ function itemNode(a, ctx, compact, idx) {
                                 : el('div', 'sub nomenu', 'Blocked, but no question is on screen. Open it to look.');
   }
   m.append(t, sub);
-  n.append(m, el('div', 'chev', '›'));
+  const dg = draftGlance(drafts.get(keyOf(a)));   // words you typed here and did not send
+  if (dg) m.append(el('div', 'sub draft', '\u270e ' + dg));
+  n.append(m, el('div', 'chev', '\u203a'));
   gesture(n, { tap: () => openDetail(a.host, a.pane, ctx), long: () => openPeek(a, ctx) });
   return n;
 }
@@ -469,7 +487,7 @@ function paintMain() {
   m.classList.toggle('radarpage', S.tab === 'all');   // the radar page is one fixed screen: the numbers on top, the radar filling the rest
   if (S.tab !== 'subs') BUD.fresh = true;   // the Subs page animates in each time you arrive, not on every refresh
   if (S.tab === 'waiting') {
-    const w = waiting(), d = finished(), sl = sleeping(), wk = working();
+    const w = waiting(), d = finished(), ds = finishedSeen(), sl = sleeping(), wk = working();
     if (S.q && S.q.writes) {   // the one big button: a brand-new project (name, folder, ccc)
       const nb = btn('', 'newbig', openNewProject); nb.id = 'newproject';
       nb.append(el('span', 'plus', '+'), el('span', 'lbl', 'Start new'), el('span', 'sub2', 'a new project'));
@@ -484,6 +502,7 @@ function paintMain() {
     }
     if (w.length) { m.append(section('Needs you \u00b7 longest first', w.length)); w.forEach((a, i) => m.append(itemNode(a, 'waiting', false, i))); }
     if (d.length) { m.append(section('Finished, not yet looked at', d.length)); d.forEach((a, i) => m.append(itemNode(a, 'waiting', false, i))); }
+    if (ds.length) { m.append(section('Finished, looked at', ds.length)); ds.forEach((a, i) => m.append(itemNode(a, 'waiting', false, i))); }
     if (wk.length) { m.append(section('Working', wk.length)); wk.forEach((a, i) => m.append(itemNode(a, 'waiting', false, i))); }
     if (sl.length) {
       const h = el('div', 'sec secrow');
@@ -656,6 +675,7 @@ setInterval(() => { if (S.tab === 'subs' && !document.hidden && $('detail').hidd
 // dots pulse and swell the longer they wait. Tap a dot to open that session. Every part of it carries a state.
 const RAD = { cx: 180, cy: 180, ring: { blocked: 62, done: 98, working: 134, idle: 166 } };
 function radarNode(list) {
+  list = list.map((a) => (isSeen(a) ? Object.assign({}, a, { status: 'idle' }) : a));   // looked at: no longer "to read"
   const NS = 'http://www.w3.org/2000/svg', mk = (t, a, txt) => { const n = document.createElementNS(NS, t); Object.keys(a || {}).forEach((k) => n.setAttribute(k, a[k])); if (txt != null) n.textContent = txt; return n; };
   const wrap = el('div', 'radarwrap');
   const svg = mk('svg', { viewBox: '-14 -14 388 388', class: 'radar', role: 'group', 'aria-label': 'Fleet radar' });
@@ -664,33 +684,62 @@ function radarNode(list) {
   const sweep = mk('g', { class: 'rsweep' }); sweep.append(mk('path', { d: 'M180 180 L180 4 A176 176 0 0 1 305 55 Z', class: 'rwedge' })); svg.append(sweep);
   const hosts = [...new Set(list.map((a) => a.host))].sort();
   const n = Math.max(1, hosts.length), span = 2 * Math.PI / n;
+  const dots = [];
   hosts.forEach((h, hi) => {
     const a0 = hi * span;
     if (n > 1) { const t = a0; svg.append(mk('line', { x1: RAD.cx, y1: RAD.cy, x2: RAD.cx + 178 * Math.sin(t), y2: RAD.cy - 178 * Math.cos(t), class: 'rsector' })); }
     const mid = a0 + span / 2;
     svg.append(mk('text', { x: RAD.cx + 188 * Math.sin(mid), y: RAD.cy - 188 * Math.cos(mid) + 4, class: 'rhost', 'text-anchor': Math.sin(mid) > 0.3 ? 'end' : Math.sin(mid) < -0.3 ? 'start' : 'middle' }, h));
-    ['blocked', 'done', 'working', 'idle'].forEach((st) => {
+    ['blocked', 'done', 'working', 'idle'].forEach((st, ri) => {
       const grp = list.filter((a) => a.host === h && (a.status === st || (st === 'idle' && !['blocked', 'done', 'working'].includes(a.status))));
       grp.forEach((a, k) => {
-        const f = (k + 0.5) / grp.length, ang = a0 + span * (0.12 + 0.76 * f), r = RAD.ring[st];
-        const x = RAD.cx + r * Math.sin(ang), y = RAD.cy - r * Math.cos(ang);
-        const g = mk('g', { class: 'rdot ' + st, tabindex: '0', role: 'button', 'aria-label': nm(a) + ', ' + (STATE_LABEL[a.status] || a.status) });
-        g.dataset.key = keyOf(a);
-        if (st === 'blocked') {
-          const mins = Math.min(240, Math.round((a.for_s || 0) / 60));
-          g.append(mk('circle', { cx: x, cy: y, r: 9 + Math.min(9, mins / 8), class: 'rpulse' }));
-          g.append(mk('circle', { cx: x, cy: y, r: 7 + Math.min(7, mins / 12), class: 'rcore' }));
-        } else g.append(mk('circle', { cx: x, cy: y, r: st === 'done' ? 6 : 4.5, class: 'rcore' }));
-        g.append(mk('circle', { cx: x, cy: y, r: 17, class: 'rhit' }));
-        if (st === 'blocked' || st === 'done') {
-          const txt = nm(a).length > 12 ? nm(a).slice(0, 11) + '…' : nm(a);
-          const right = Math.sin(ang) >= 0;
-          g.append(mk('text', { x: x + (right ? 14 : -14), y: y + 4, class: 'rlbl', 'text-anchor': right ? 'start' : 'end' }, txt));
-        }
-        gesture(g, { tap: () => openDetail(a.host, a.pane, 'all') });
-        svg.append(g);
+        // Each ring is shifted by a different fraction of the gap between its dots, so dots on neighbouring rings do not line up on one spoke.
+        const f = (k + 0.5 + ([0, 0.5, 0.25, 0.75][ri] - 0.375) * 0.6) / grp.length, ang = a0 + span * (0.12 + 0.76 * Math.min(1, Math.max(0, f))), r = RAD.ring[st];
+        dots.push({ a, st, ang, x: RAD.cx + r * Math.sin(ang), y: RAD.cy - r * Math.cos(ang) });
       });
     });
+  });
+  // Every dot carries its name, and no two names, dots or ring captions overlap: each label tries the right, left, above, below and the four corners
+  // of its dot, in that order, and takes the first free one. The loudest states choose first.
+  const big = (d) => d.st === 'blocked' || d.st === 'done';
+  const nameOf = (d) => { const max = big(d) ? 12 : 10, t = nm(d.a); return t.length > max ? t.slice(0, max - 1) + '…' : t; };
+  const keepOut = [{ x0: 144, y0: 146, x1: 216, y1: 208 }];   // the number in the middle
+  Object.values(RAD.ring).forEach((r) => keepOut.push({ x0: RAD.cx + 2, y0: RAD.cy - r + 1, x1: RAD.cx + 52, y1: RAD.cy - r + 14 }));   // IDLE / WORKING / DONE / WAITING
+  const placed = [], hit = (b, c, pad) => b.x0 < c.x1 + pad && b.x1 > c.x0 - pad && b.y0 < c.y1 + pad && b.y1 > c.y0 - pad;
+  const dotBox = (d) => ({ x0: d.x - 8, y0: d.y - 8, x1: d.x + 8, y1: d.y + 8 });
+  const order = { blocked: 0, done: 1, working: 2, idle: 3 };
+  dots.slice().sort((p, q) => order[p.st] - order[q.st]).forEach((d) => {
+    const txt = nameOf(d), bg = big(d), w = txt.length * (bg ? 6.6 : 5.6), h = bg ? 12 : 11, pad = bg ? 13 : 10, right = Math.sin(d.ang) >= 0;
+    const at = (ax, ay, anchor) => ({ anchor, x: ax, y: ay, box: { x0: anchor === 'start' ? ax : anchor === 'end' ? ax - w : ax - w / 2, x1: anchor === 'start' ? ax + w : anchor === 'end' ? ax : ax + w / 2, y0: ay - h + 3, y1: ay + 3 } });
+    const cands = [at(d.x + pad, d.y + 4, 'start'), at(d.x - pad, d.y + 4, 'end'), at(d.x, d.y - pad + 1, 'middle'), at(d.x, d.y + pad + h - 2, 'middle'),
+                   at(d.x + pad - 3, d.y - pad + 4, 'start'), at(d.x - pad + 3, d.y - pad + 4, 'end'), at(d.x + pad - 3, d.y + pad + 6, 'start'), at(d.x - pad + 3, d.y + pad + 6, 'end')];
+    [-13, 13, -26, 26].forEach((dy) => { cands.push(at(d.x + pad, d.y + 4 + dy, 'start'), at(d.x - pad, d.y + 4 + dy, 'end')); });   // a row up or down, when the side is taken
+    [-34, 34].forEach((dx) => { cands.push(at(d.x + dx, d.y - pad + 1, 'middle'), at(d.x + dx, d.y + pad + h - 2, 'middle')); });
+    if (!right) { const t = cands[0]; cands[0] = cands[1]; cands[1] = t; }
+    const score = (c) => {
+      let s = 0; const b = c.box;
+      if (b.x0 < -12 || b.x1 > 372 || b.y0 < -12 || b.y1 > 372) s += 1000;
+      keepOut.forEach((k) => { if (hit(b, k, 1)) s += 300; });
+      dots.forEach((o) => { if (o !== d && hit(b, dotBox(o), 1)) s += 300; });
+      placed.forEach((p) => { if (hit(b, p, 2)) s += 400; });
+      return s;
+    };
+    let best = cands[0], bs = Infinity;
+    for (const c of cands) { const s = score(c); if (s < bs) { best = c; bs = s; if (s === 0) break; } }
+    placed.push(best.box); d.label = { txt, best, bg };
+  });
+  dots.forEach((d) => {
+    const { a, st } = d, g = mk('g', { class: 'rdot ' + st, tabindex: '0', role: 'button', 'aria-label': nm(a) + ', ' + (STATE_LABEL[a.status] || a.status) });
+    g.dataset.key = keyOf(a);
+    if (st === 'blocked') {
+      const mins = Math.min(240, Math.round((a.for_s || 0) / 60));
+      g.append(mk('circle', { cx: d.x, cy: d.y, r: 9 + Math.min(9, mins / 8), class: 'rpulse' }));
+      g.append(mk('circle', { cx: d.x, cy: d.y, r: 7 + Math.min(7, mins / 12), class: 'rcore' }));
+    } else g.append(mk('circle', { cx: d.x, cy: d.y, r: st === 'done' ? 6 : 4.5, class: 'rcore' }));
+    g.append(mk('circle', { cx: d.x, cy: d.y, r: 17, class: 'rhit' }));
+    g.append(mk('text', { x: d.label.best.x, y: d.label.best.y, class: 'rlbl' + (d.label.bg ? '' : ' sm'), 'text-anchor': d.label.best.anchor }, d.label.txt));
+    gesture(g, { tap: () => openDetail(a.host, a.pane, 'all') });
+    svg.append(g);
   });
   const waiting = list.filter((a) => a.status === 'blocked').length;
   const centre = mk('g', { class: 'rcentre', role: 'button', tabindex: '0', 'aria-label': 'Open what is waiting on you' });
@@ -812,8 +861,12 @@ function notifyCard() {
   const row = (label, key) => { const r = el('label', 'chk'); const cb = el('input'); cb.type = 'checkbox'; cb.checked = !!S.push.prefs[key]; cb.addEventListener('change', () => pushPref(key, cb.checked));
     const m = el('div', 'meta'); m.append(el('div', 'ttl', label)); r.append(cb, m); return r; };
   c.append(row('An agent is waiting on me', 'blocked'), row('An agent finished', 'done'));
+  if (S.push.last) {   // what the push service said to the last push: "accepted" means Apple has it, so a silent phone is a phone setting
+    const L = S.push.last, ok = L.code >= 200 && L.code < 300;
+    c.append(el('p', 'dim', 'Last push ' + new Date(L.at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) + ' (' + L.why + '): Apple answered ' + L.code + (ok ? ', so it reached Apple. If nothing showed, check Focus (the moon or bed icon) and Settings, Notifications, Shepr.' : '. It did not go through.')));
+  }
   const acts = el('div', 'btns'); acts.style.marginTop = '8px';
-  acts.append(btn('Send a test', '', () => post('api/push/test', {}).then((r) => notify(r.ok ? 'Sent. It should arrive in a moment.' : 'The push service answered ' + r.status + '.', !r.ok)).catch((e) => notify(e.message, true))), btn('Turn off', '', pushOff));
+  acts.append(btn('Send a test', '', () => post('api/push/test', {}).then((r) => { notify(r.ok ? 'Apple accepted it. If nothing appears in a few seconds, check Focus and Settings, Notifications, Shepr.' : 'The push service answered ' + r.status + '.', !r.ok); loadPush(); }).catch((e) => notify(e.message, true))), btn('Turn off', '', pushOff));
   c.append(acts);
   return c;
 }
@@ -1351,6 +1404,7 @@ function paintDetailChrome() {
   } else {
     $('dstate').textContent = 'GONE'; $('dstate').className = 'state';
   }
+  if (a && a.status === 'done') seenStore.mark(S.cur.host + '|' + S.cur.pane, a.seq);   // you are looking at it
   paintModelChip(a);
   $('dpos').textContent = i >= 0 ? (i + 1) + '/' + l.length : '–/' + l.length;
   $('dprev').disabled = !(l.length && (i > 0 || (i < 0 && S.idx > 0)));
@@ -1528,7 +1582,7 @@ function loadTail(force) {
   api('api/pane?host=' + encodeURIComponent(at.host) + '&pane=' + encodeURIComponent(at.pane) + '&lines=40')
     .then((r) => {
       if (!S.cur || S.cur.host !== at.host || S.cur.pane !== at.pane) return;
-      S.agent = r.agent; S.menu = r.menu;
+      S.agent = r.agent; S.menu = r.menu; S.queued = !!r.queued;
       const changed = r.text !== S.tailText;
       if (changed || force) {
         const first = S.tailText === null;
@@ -1705,9 +1759,13 @@ function paintDock() {
   if (!key.hidden) {
     (st === 'working' ? [KEYS[3]] : KEYS).forEach((k) => key.append(btn(k[0], '', () => stageKey(k[1]))));
   }
+  // A message waiting behind running work: Claude Code's own "ctrl+enter to send now", as a button (the hint line itself is hidden).
+  const q = $('qrow'); q.textContent = '';
+  q.hidden = !(S.queued && S.agent && S.agent.agent === 'claude' && S.q && S.q.writes);
+  if (!q.hidden) q.append(el('span', 'qtxt', 'A message is queued behind the current work.'), btn('Send now', 'qgo', () => prepare({ kind: 'sendnow' })));
   // Short on purpose: the box is narrow now (the / button), and a placeholder that wraps makes the box grow.
-  const ph = st === 'blocked' ? 'Answer, sent with ⏎'
-           : st === 'working' ? 'Queued until it is free'
+  const ph = st === 'blocked' ? (m && m.options.length ? (m.options.some((o) => o.free) ? 'Your own answer (goes in the \u270e row)' : 'Tap an option above') : 'Answer, sent with \u23ce')
+           : st === 'working' ? 'Queue a message'
            : 'Message ' + (S.agent ? S.agent.agent : '');
   $('msg').placeholder = ph;
   $('send').disabled = !S.agent;
@@ -1866,7 +1924,10 @@ function paintStage() {
 }
 
 function autosize() {
-  const t = $('msg'); t.style.height = 'auto'; t.style.height = Math.min(t.scrollHeight, 92) + 'px';
+  // Collapsing to "auto" to measure resets the scroll on iOS, which left the top of a long message in view while you typed at the end.
+  const t = $('msg'), keep = t.scrollTop, atEnd = t.selectionStart === t.value.length;
+  t.style.height = 'auto'; t.style.height = Math.min(t.scrollHeight, 132) + 'px';
+  t.scrollTop = atEnd ? t.scrollHeight : keep;
 }
 $('msg').addEventListener('input', autosize);
 $('msg').addEventListener('input', () => { if (S.cur) drafts.put(S.cur.host + '|' + S.cur.pane, $('msg').value); });
@@ -2177,4 +2238,4 @@ async function boot() {
   hideSplash(false);
 }
 boot();
-window.shepr = { S, ping, standalone, signHeaders, renderBlocks, appIsStale, BUILD, liveCut, syncHistory, prepareUpload, loadLedger, fmtDur, paceLive, budgetVerdict, drafts, currentModel };
+window.shepr = { S, ping, standalone, signHeaders, renderBlocks, appIsStale, BUILD, liveCut, syncHistory, prepareUpload, loadLedger, fmtDur, paceLive, budgetVerdict, drafts, currentModel, seenStore, isSeen, finished, finishedSeen, paintMain };
