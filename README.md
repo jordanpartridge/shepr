@@ -3,9 +3,10 @@
 <p align="center"><b>An iPhone home-screen app that shows which agent sessions, on which hosts, are waiting on you.</b><br>
 Tap one, read it, answer it. Sends confirm first, and it never approves anything by itself.</p>
 
-Built with the [nixweb.app](../nixweb.app) method: a web page on your tailnet. No Xcode, no App Store, no build step,
-no framework, no npm. Idea #2 in nixweb's `IDEAS.md`: "the killer one", because agents block on a question and then
-idle for an hour with nobody at the keyboard.
+A plain web page served over your tailnet. No Xcode, no App Store, no build step, no framework, no npm. It exists
+because agents block on a question and then idle for an hour with nobody at the keyboard.
+
+It works with [herdr](https://herdr.dev) today. Orca support is coming.
 
 <p align="center"><img src="docs/img/screens.png" alt="Shepr screens: the queue, answering a dialog, readable text, waking sleeping sessions" width="100%"></p>
 
@@ -22,13 +23,30 @@ workers on plain `http://`. `tailscale serve` supplies a real certificate on you
 ## Use it
 
 ```bash
-# once, on the host (gus):
-~/Projects/nixweb.app/bin/nixweb install herder.remote.iphone 8742   # systemd --user unit + tailscale serve
+# once, on the machine that runs herdr (needs python3, tailscale, and herdr on PATH):
+git clone https://github.com/nixfred/shepr && cd shepr
+mkdir -p ~/.config/systemd/user ~/bin && ln -sf "$PWD/server.py" ~/bin/shepr
+cat > ~/.config/systemd/user/shepr.service <<EOF
+[Unit]
+Description=Shepr
+
+[Service]
+WorkingDirectory=$PWD
+ExecStart=/usr/bin/python3 $PWD/server.py 8742
+ExecStartPost=/usr/bin/tailscale serve --bg --https=8742 http://127.0.0.1:8742
+ExecStopPost=-/usr/bin/tailscale serve --https=8742 off
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target
+EOF
+systemctl --user daemon-reload && systemctl --user enable --now shepr
 shepr pair                                                           # shows a QR code
 ```
 
-On the iPhone, in **Safari**: open `https://gus.tail0940f.ts.net:8742`, Share, **Add to Home Screen**. Open **Shepr**
-from the Home Screen, tap **Scan QR**, point it at the code in your terminal, tap **Pair**.
+On the iPhone, in **Safari**: open `https://<this-host>.<your-tailnet>.ts.net:8742`, Share, **Add to Home Screen**. Open
+**Shepr** from the Home Screen, tap **Scan QR**, point it at the code in your terminal, tap **Pair**.
 
 <p align="center"><img src="docs/img/pairing.svg" alt="Pairing: host shows a QR, phone scans it, the key never leaves, every call is signed" width="100%"></p>
 
@@ -128,10 +146,12 @@ preview-and-confirm sheet and run `herdr machine add|enable|disable`.
 - "Blocked for" is measured: herdr gives an event counter, not a clock. The host polls herdr every 15 s and
   remembers when it first saw each blocked state; for local Claude sessions that were already blocked it uses the
   transcript's last-write time. A leading `≥` means it was already blocked when watching began.
-- Verified here: the server, the signing scheme (WebCrypto signatures checked by the pure-Python verifier), QR
-  generation and scanning (fake camera feed through jsQR), gestures, wake, the text renderer, layout at iPhone 14
-  size, offline start, and a real tailnet scan. **Not verified on a physical iPhone**: camera permission in a Home
-  Screen app, keyboard behaviour, the launch images. `Keys > Top spacing` exists because a real phone clipped the header.
+- Tested against an isolated herdr session: the server, the signing scheme (WebCrypto signatures checked by the
+  pure-Python verifier), QR generation and scanning (fake camera feed through jsQR), gestures, wake, tick-several
+  questions, the text renderer, layout at iPhone 14 size, offline start, and a real tailnet scan. Paired and in use
+  on one real iPhone (iOS 18.7); other devices and iOS versions are untested. `Keys > Top spacing` exists because a
+  real phone clipped the header.
+- Tick-several questions: "Type something" is not tickable from the phone yet.
 - Sending a prompt to an idle agent could not be exercised against a real agent in the isolated test session
   (herdr refuses a fake agent that is not the pane's foreground process).
 - iOS may delete a Home Screen app's storage if it is removed; the key goes with it. Pair again.
@@ -149,7 +169,7 @@ tests/               ui.mjs, sw_offline.mjs, format.mjs, pair_cli_test.py, fake-
 ```
 
 State: `~/.local/state/shepr/` (`devices.json`, `seen.json`, `pairing.json`, `sends.jsonl` audit log), mode 0600.
-Logs: `journalctl --user -u nixweb-herder.remote.iphone -f`. The app shell is fetched network-first (2.5 s, then
+Logs: `journalctl --user -u shepr -f`. The app shell is fetched network-first (2.5 s, then
 cache) so a change shows on the next open and the app still opens offline.
 The host also announces the current build (`/api/hello`, `/api/queue`). A Home Screen app can stay alive in iOS
 memory for days, so a phone running an older build reloads itself at the first safe moment (on the list, nothing
@@ -166,3 +186,8 @@ tests/fake-session.sh down
 ```
 
 The screenshots are captures, never mocks. The agents and their titles in them are made up.
+
+## Credits and licence
+
+MIT, see `LICENSE`. Built on [herdr](https://herdr.dev) (Apache-2.0) and [jsQR](https://github.com/cozmo/jsQR)
+(Apache-2.0, vendored in `vendor/`).
