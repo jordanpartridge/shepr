@@ -8,7 +8,7 @@
      3. No timer, retry or "auto" anything ever sends. A failed send is reported, never repeated.
      4. The private key never leaves the phone: it is generated non-extractable and only signs. */
 'use strict';
-const BUILD = 'v27';   // keep equal to sw.js VERSION: shown in Keys and logged by the host, so you can see which app a phone is running
+const BUILD = 'v28';   // keep equal to sw.js VERSION: shown in Keys and logged by the host, so you can see which app a phone is running
 
 // ---------------------------------------------------------------------------
 // 1. Service worker. Without this, a dead tailnet shows Safari's error page and
@@ -35,6 +35,22 @@ function el(tag, cls, text) {
 const store = {
   get(k, d) { try { const v = localStorage.getItem(k); return v == null ? d : JSON.parse(v); } catch (e) { return d; } },
   set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) { /* private mode: fine */ } },
+};
+// Unsent text in a session's message box, kept per session so moving to another project and back finds it again. It lives
+// on this phone only (localStorage) and is never sent anywhere until you press Send.
+const DRAFT_MAX = 30, DRAFT_DAYS = 14;
+const drafts = {
+  all() { const d = store.get('shepr.drafts', {}); return d && typeof d === 'object' && !Array.isArray(d) ? d : {}; },
+  get(k) { const e = this.all()[k]; return e && typeof e.t === 'string' ? e.t : ''; },
+  put(k, text) {
+    const d = this.all(), now = Date.now();
+    if (!text.trim()) delete d[k]; else d[k] = { t: text.slice(0, 4000), at: now };
+    Object.keys(d).forEach((x) => { if (!d[x] || typeof d[x].t !== 'string' || now - (d[x].at || 0) > DRAFT_DAYS * 86400000) delete d[x]; });
+    const keys = Object.keys(d).sort((x, y) => d[y].at - d[x].at);
+    keys.slice(DRAFT_MAX).forEach((x) => delete d[x]);
+    store.set('shepr.drafts', d);
+  },
+  has(k) { return !!this.get(k); },
 };
 const REDUCED = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 const clock = (sec) => new Date(sec * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
@@ -485,6 +501,7 @@ function paintMain() {
     }
   } else if (S.tab === 'all') {
     m.append(radarNode(agents().filter(inHost)));   // the Queue already lists every session by state; this shows the fleet at a glance
+    const bw = el('div', 'budget'); bw.id = 'budget'; m.append(bw); paintBudget(); fetchBudget(false);
   } else if (S.tab === 'hosts') {
     paintHostsView(m);
   } else {
@@ -527,6 +544,106 @@ $('refresh').addEventListener('click', () => { fetchQueue(true); if (S.tab === '
   m.addEventListener('touchend', end, { passive: true });
   m.addEventListener('touchcancel', () => { y0 = null; paint(0); }, { passive: true });
 })();
+
+// ---- subscription budget. Burn Bar measures each plan on the host; this shows it under the radar. Budget means an even spend
+// across the plan's window: if you have used less than the clock has, the difference is BANKED; more, and you are BEHIND, with
+// a countdown to when the clock catches up if you stop. Same rules as Burn Bar's own panel, so the two always agree.
+const BUD = { data: null, at: 0, busy: false, ticks: [], err: '', open: '' };
+const serverNow = () => Date.now() + (S.skew || 0);   // the host's clock: the resets are in its time
+const two = (n) => String(n).padStart(2, '0');
+function clockSpan(ms) { const t = Math.max(0, Math.floor(ms / 1000)), d = Math.floor(t / 86400), h = Math.floor(t % 86400 / 3600), m = Math.floor(t % 3600 / 60), sec = t % 60; return (d ? d + 'd ' + two(h) : String(h)) + ':' + two(m) + ':' + two(sec); }
+function spanWords(ms) { const m = Math.round(ms / 60000), d = Math.floor(m / 1440), h = Math.floor(m % 1440 / 60); return d ? d + 'd ' + h + 'h' : h ? h + 'h ' + (m % 60) + 'm' : m + 'm'; }
+// Where one window stands right now. Pure: the clock keeps moving between host readings, so elapsed comes from the reset and `now`.
+function paceLive(used, resetsMs, windowMs, now) {
+  if (!(used >= 0) || !(resetsMs > 0) || !(windowMs > 0) || !(now > 0) || now >= resetsMs) return null;
+  const p = Math.min(1, used), left = resetsMs - now, e = Math.max(0, Math.min(1, 1 - left / windowMs));
+  const o = { used: p, elapsed: e, leftMs: left, banked: 0, bankedMs: 0, behind: 0, over: false, comeBackMs: 0, spent: p >= 0.995 };
+  if (o.spent) { o.behind = Math.max(0, p - e); o.over = true; o.comeBackMs = left; }
+  else if (e > p) { o.banked = e - p; o.bankedMs = o.banked * windowMs; }
+  else if (p > e) { o.behind = p - e; o.over = o.behind > 0.01 && (e <= 0 || p / e > 1.05); o.comeBackMs = Math.max(0, Math.min(resetsMs, resetsMs - windowMs * (1 - p)) - now); }
+  return o;
+}
+function budgetVerdict(live, rough) {
+  if (!live) return { tone: 'dim', word: 'NO PACE YET', line: 'Not enough of this window has passed to judge.' };
+  const t = rough ? '~' : '';
+  if (live.spent) return { tone: 'hot', word: 'SPENT', line: 'Back at the reset in ' + clockSpan(live.leftMs) };
+  if (live.over) return { tone: 'hot', word: 'BEHIND', line: 'Come back in ' + clockSpan(live.comeBackMs) + ' if you stop · ' + t + Math.round(live.behind * 100) + '% over' };
+  if (live.banked >= 0.01) return { tone: 'ok', word: 'BANKED ' + t + Math.round(live.banked * 100) + '%', line: clockSpan(live.bankedMs) + ' in the bank' };
+  return { tone: 'accent', word: 'ON PACE', line: 'Even with the clock. Carry on.' };
+}
+function budgetRowName(l) { return l.replace(/\s*\(([^)]*)\)/, ' $1').replace(/\bWeekly 7-day\b/, 'Week').replace(/\bSession 5-hour\b/, '5-hour session').replace(/\bMonthly total\b/, 'Month'); }
+function budgetGraph(row, live, tone, gid) {
+  const NS = 'http://www.w3.org/2000/svg', mk = (t, a) => { const n = document.createElementNS(NS, t); Object.keys(a || {}).forEach((k) => n.setAttribute(k, a[k])); return n; };
+  const X0 = 4, X1 = 196, Y0 = 60, Y1 = 4, X = (e) => (X0 + Math.max(0, Math.min(1, e)) * (X1 - X0)).toFixed(1), Y = (u) => (Y0 - Math.max(0, Math.min(1, u)) * (Y0 - Y1)).toFixed(1);
+  const svg = mk('svg', { viewBox: '0 0 200 64', class: 'bd-svg', preserveAspectRatio: 'none', role: 'img', 'aria-label': 'Burn-down: plan used against the clock' });
+  const col = 'var(--' + tone + ')';
+  const defs = mk('defs'), grad = mk('linearGradient', { id: gid, x1: 0, y1: 0, x2: 0, y2: 1 });
+  grad.append(mk('stop', { offset: '0%', 'stop-color': col, 'stop-opacity': '.55' }), mk('stop', { offset: '100%', 'stop-color': col, 'stop-opacity': '0' })); defs.append(grad); svg.append(defs);
+  [0.25, 0.5, 0.75].forEach((u) => svg.append(mk('line', { x1: X0, x2: X1, y1: Y(u), y2: Y(u), class: 'bd-grid' })));
+  svg.append(mk('line', { x1: X0, y1: Y(0), x2: X1, y2: Y(1), class: 'bd-even' }));   // an even spend is the diagonal; above it is over
+  const pts = (row.series || []).filter((q) => q[0] <= (live ? live.elapsed : 1) + 0.0001).map((q) => [q[0], q[1]]);
+  if (live) pts.push([live.elapsed, live.used]);
+  if (pts.length >= 2) {
+    const line = pts.map((q, i) => (i ? 'L' : 'M') + X(q[0]) + ' ' + Y(q[1])).join(' ');
+    svg.append(mk('path', { d: line + ' L' + X(pts[pts.length - 1][0]) + ' ' + Y(0) + ' L' + X(pts[0][0]) + ' ' + Y(0) + ' Z', fill: 'url(#' + gid + ')' }));
+    svg.append(mk('path', { d: line, class: 'bd-line', stroke: col }));
+  }
+  if (live) {
+    svg.append(mk('line', { x1: X(live.elapsed), x2: X(live.elapsed), y1: Y1, y2: Y0, class: 'bd-now' }));
+    if (row.projected > 0 && live.elapsed < 0.995) {   // where the current rate lands at the reset
+      const pj = Math.min(1.15, row.projected), over = row.projected > 1;
+      svg.append(mk('line', { x1: X(live.elapsed), y1: Y(live.used), x2: X1, y2: Y(pj), class: 'bd-proj' + (over ? ' over' : '') }));
+    }
+    svg.append(mk('circle', { cx: X(live.elapsed), cy: Y(live.used), r: 7, fill: col, opacity: '.18' }), mk('circle', { cx: X(live.elapsed), cy: Y(live.used), r: 3.4, fill: col, stroke: '#05080c', 'stroke-width': 1.2 }));
+  }
+  return svg;
+}
+function budgetCard(ag) {
+  const rows = ag.rows.slice().sort((a, b) => (b.window_ms - a.window_ms) || (b.used - a.used));
+  const prim = rows[0], rest = rows.slice(1), rough = !ag.live;
+  const card = el('div', 'bd' + (BUD.open === ag.id ? ' open' : '')); card.dataset.id = ag.id;
+  const top = el('div', 'bd-top'), idc = el('div', 'bd-id'), nm = el('div', 'bd-n', ag.name), big = el('div', 'bd-pct'), gwrap = el('div', 'bd-g'), vc = el('div', 'bd-vc'), vd = el('div', 'bd-v'), plabel = el('div', 'bd-w');
+  big.append(el('span', null, ''), el('small', null, 'used'));
+  idc.append(nm, big); vc.append(vd, plabel); top.append(idc, gwrap, vc); card.append(top);
+  if (!prim) { card.style.setProperty('--tone', 'var(--dim)'); vd.textContent = 'NO DATA'; plabel.textContent = ag.status || ag.help || 'No plan limits reported.'; big.hidden = true; return card; }
+  const more = el('div', 'bd-more'), line = el('div', 'bd-l');
+  more.append(line);
+  const subs = rest.map((r) => { const w = el('div', 'bd-r'), nmx = el('span', 'bd-rn', budgetRowName(r.label)), tr = el('span', 'bd-bar'), fill = el('i'), tick = el('b'), tx = el('span', 'bd-rt'); tr.append(fill, tick); w.append(nmx, tr, tx); more.append(w); return { r, fill, tick, tx, w }; });
+  const note = el('div', 'bd-note'); more.append(note); card.append(more);
+  card.addEventListener('click', () => { BUD.open = BUD.open === ag.id ? '' : ag.id; document.querySelectorAll('.bd').forEach((c) => c.classList.toggle('open', c.dataset.id === BUD.open)); });
+  plabel.textContent = budgetRowName(prim.label);
+  const gid = 'bdg-' + ag.id;
+  function paint(first) {
+    const now = serverNow(), live = paceLive(prim.used, prim.resets_ms, prim.window_ms, now), v = budgetVerdict(live, rough);
+    card.style.setProperty('--tone', 'var(--' + v.tone + ')'); vd.textContent = v.word; line.textContent = v.line;
+    big.firstChild.textContent = (rough ? '~' : '') + Math.round(prim.used * 100) + '%';
+    if (first) { gwrap.textContent = ''; gwrap.append(budgetGraph(prim, live, v.tone, gid)); }
+    subs.forEach((x) => { const lv = paceLive(x.r.used, x.r.resets_ms, x.r.window_ms, now), sv = budgetVerdict(lv, rough); x.fill.style.width = Math.round(Math.min(1, x.r.used) * 100) + '%'; x.tick.style.left = lv ? Math.round(lv.elapsed * 100) + '%' : '0%'; x.tick.hidden = !lv; x.w.style.setProperty('--tone', 'var(--' + sv.tone + ')'); x.tx.textContent = Math.round(x.r.used * 100) + '% · ' + sv.word.toLowerCase(); });
+    const age = ag.measured_at ? now - ag.measured_at : 0;
+    note.textContent = rough ? 'A snapshot from ' + (ag.measured_at ? new Date(ag.measured_at).toLocaleString([], { weekday: 'short', hour: 'numeric', minute: '2-digit' }) : 'when it last started') + ', so the numbers are rough.'
+      : (age > 20 * 60000 ? 'Last measured ' + spanWords(age) + ' ago.' : '');
+    note.hidden = !note.textContent;
+  }
+  paint(true); BUD.ticks.push(() => paint(false));
+  return card;
+}
+function paintBudget() {
+  const host = $('budget'); if (!host) return;
+  BUD.ticks = []; host.textContent = '';
+  const d = BUD.data;
+  if (!d) { host.append(el('div', 'bd-empty', BUD.err ? 'Subscription budget unavailable: ' + BUD.err : 'Reading your subscriptions…')); return; }
+  if (!d.available) { host.append(el('div', 'bd-empty', d.reason || 'No subscription data on this host.')); return; }
+  const h = el('div', 'sec bd-sec'); h.append(el('span', null, 'Subscriptions'), el('span', 'bd-sub', 'tap one for the clock')); host.append(h);
+  d.agents.forEach((ag) => host.append(budgetCard(ag)));
+}
+async function fetchBudget(force) {
+  if (BUD.busy || !S.dev || (!force && Date.now() - BUD.at < 20000)) return;
+  BUD.busy = true;
+  try { BUD.data = await api('api/budget'); BUD.at = Date.now(); BUD.err = ''; } catch (e) { BUD.err = e.message || 'failed'; } finally { BUD.busy = false; }
+  paintBudget();
+}
+setInterval(() => { if (S.tab === 'all' && !document.hidden && $('detail').hidden && !S.sheetOpen) fetchBudget(true); }, 30000);
+setInterval(() => { if (S.tab === 'all' && !document.hidden && $('detail').hidden) BUD.ticks.forEach((f) => f()); }, 1000);
 
 // ---- the fleet radar. Centre = needs you. Rings outward: waiting, finished, working, idle. Each host owns a sector. Blocked
 // dots pulse and swell the longer they wait. Tap a dot to open that session. Every part of it carries a state.
@@ -1111,7 +1228,8 @@ function commit(plan, goBtn) {
     }
     S.selSig = null; S.freeText = '';   // the next tick-several question starts from what is on screen
     // The answer can arrive after you moved to another session: only clear the draft of the one it was for.
-    if (S.cur && S.cur.host + '|' + S.cur.pane === sentTo) { S.keybuf = []; paintStage(); $('msg').value = ''; autosize(); }
+    if (plan.kind === 'text' && sentTo) drafts.put(sentTo, '');   // sent: nothing left to keep, even if you have moved on since
+    if (S.cur && S.cur.host + '|' + S.cur.pane === sentTo) { S.keybuf = []; paintStage(); if (plan.kind === 'text') { $('msg').value = ''; autosize(); } }   // a tapped option must not wipe the words you have not sent
     if (plan.kind === 'text') noteSlashUse(plan.target.host, S.lastText);
     notify('Sent to ' + (plan.target.title || plan.target.pane), false);
     setTimeout(loadTail, 1400);
@@ -1147,6 +1265,7 @@ function position() {
 
 function openDetail(host, pane, ctx) {
   const k = host + '|' + pane;
+  if (S.cur) drafts.put(S.cur.host + '|' + S.cur.pane, $('msg').value);   // what you typed here and did not send waits for you
   if (S.cur && (S.cur.host + '|' + S.cur.pane) !== k) S.prevKey = S.cur.host + '|' + S.cur.pane;
   S.cur = { host, pane }; S.ctx = ctx || S.ctx;
   S.tailText = null; S.menu = null; S.agent = null; S.keybuf = []; S.selSig = null; S.hist = null;
@@ -1159,12 +1278,13 @@ function openDetail(host, pane, ctx) {
   $('tail').textContent = 'reading…';
   $('toast').hidden = true;
   const g = $('gtoast'); if (g) g.hidden = true;   // a toast left over from the list must not cover this session's buttons
-  S.slashOpen = false; $('msg').value = ''; autosize(); paintStage(); paintDetailChrome();
+  S.slashOpen = false; $('msg').value = drafts.get(k); autosize(); paintStage(); paintDetailChrome();
   loadCmds(host);
   loadTail(true);
 }
 
 function closeDetail() {
+  if (S.cur) drafts.put(S.cur.host + '|' + S.cur.pane, $('msg').value);
   $('detail').hidden = true; S.cur = null;
   try { history.replaceState(null, '', location.pathname + location.search); } catch (e) { /* ignore */ }
   fetchQueue(true);
@@ -1650,6 +1770,7 @@ function autosize() {
   const t = $('msg'); t.style.height = 'auto'; t.style.height = Math.min(t.scrollHeight, 92) + 'px';
 }
 $('msg').addEventListener('input', autosize);
+$('msg').addEventListener('input', () => { if (S.cur) drafts.put(S.cur.host + '|' + S.cur.pane, $('msg').value); });
 $('compose').addEventListener('submit', (e) => {
   e.preventDefault();
   const text = $('msg').value.trim();
@@ -1957,4 +2078,4 @@ async function boot() {
   hideSplash(false);
 }
 boot();
-window.shepr = { S, ping, standalone, signHeaders, renderBlocks, appIsStale, BUILD, liveCut, syncHistory, prepareUpload, loadLedger, fmtDur };
+window.shepr = { S, ping, standalone, signHeaders, renderBlocks, appIsStale, BUILD, liveCut, syncHistory, prepareUpload, loadLedger, fmtDur, paceLive, budgetVerdict, drafts };

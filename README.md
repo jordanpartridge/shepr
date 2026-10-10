@@ -148,6 +148,15 @@ The **Radar** tab shows every session as a radar. The centre is "needs you"; the
 idle. Each host has its own sector. Waiting dots pulse, swell the longer they wait, and carry the project name. Tap a dot to open
 that session. With the iPhone's Reduce Motion on, the sweep and the pulses stand still.
 
+Under the radar, one row per subscription (Claude, Codex, Kimi, Grok) answers "how much have I burned, and am I on pace?". Each
+row has the plan used so far, a burn-down graph (the dashed diagonal is an even spend; above it is over, and the dotted line is
+where your current rate lands at the reset) and a verdict: **BANKED 32%** when you have used less than the clock has,
+**BEHIND** when you are more than 5% past an even spend, **ON PACE**, or **SPENT**. Tap a row for the countdown (how long the
+bank is, or when to come back if you stop now) and the other windows, such as the 5-hour session. The numbers come from
+[Burn Bar](https://github.com/nixfred/burnbar), which measures each plan on the host; Shepr only reads its file
+(`SHEPR_BURN` overrides the path), so without Burn Bar the rows say so instead of guessing. Grok only reports its quota when it
+starts, so its figures carry a `~`.
+
 ### Wake a project that is asleep
 
 At the bottom of the Queue, **Asleep (N)** counts herdr projects whose terminal has no Claude or Codex session running. **Wake…**
@@ -180,6 +189,8 @@ have landed, and the message says so.
   arrow/Enter/Esc pad, or a typed line. Options that read like approvals are marked amber and the confirm sheet says so.
 - An idle agent gets a normal prompt. A working agent only accepts `Esc` (interrupt) or a queued prompt.
 - No ctrl-chords from a phone. `SHEPR_READONLY=1` turns every write off.
+- What you type in a session's box and do not send is kept for that session on this phone, so moving to another project and back
+  finds it again. It never leaves the phone until you press Send.
 
 ## Pairing and keys
 
