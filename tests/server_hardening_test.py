@@ -3,6 +3,8 @@ network or the real state directory.  Run: python3 tests/server_hardening_test.p
 import hashlib, importlib.util, json, os, sys, tempfile, threading, time
 here = os.path.dirname(os.path.abspath(__file__))
 os.environ["SHEPR_STATE"] = tempfile.mkdtemp()
+for _k in ("SHEPR_NEW_CMD", "SHEPR_CLAUDE_CMD", "SHEPR_CODEX_CMD", "SHEPR_PROJECTS", "SHEPR_PUSH_ALLOW", "SHEPR_READONLY"): os.environ.pop(_k, None)   # a test pins its own settings, not the shell's
+os.environ["SHEPR_POLL"] = "15"
 spec = importlib.util.spec_from_file_location("shepr_server", os.path.join(here, "..", "server.py"))
 srv = importlib.util.module_from_spec(spec); spec.loader.exec_module(srv)
 
@@ -131,5 +133,22 @@ check("upload: files older than a week are deleted on the next upload", not os.p
 srv.UPLOAD_DIR_CAP = 120
 paths = [srv.save_upload(PNG + bytes([i]), "png", "dev1")["path"] for i in range(5)]
 check("upload: the folder is kept under its size cap by dropping the oldest first", sum(os.path.getsize(p) for p in paths if os.path.exists(p)) <= 120 and os.path.exists(paths[-1]))
+
+# ---- Start new: a first message is DATA for the shell, quoted as one word
+import subprocess
+nasty = ["it's \"quoted\" $HOME `whoami` ; touch /tmp/shepr-pwned #x", "$(id)", "a\\b", "-n", "'", "~ && echo hacked", "é ü 日本"]
+check("first message: quoted, every nasty string reaches the program as exactly ONE argument, unchanged",
+      all(subprocess.run(["bash", "-c", "printf '%s' " + srv.shlex.quote(m)], capture_output=True, text=True).stdout == m for m in nasty) and not os.path.exists("/tmp/shepr-pwned"))
+srv.need_host = lambda h: {"id": "gus", "machine": None, "kind": "local", "enabled": True}
+srv.run_herdr = lambda machine, args, timeout=10, want_json=True: {"result": {"workspaces": []}}
+p1 = srv.plan_new_project({"host": "gus", "name": "N", "dir": "d", "message": "it's fine"})
+p2 = srv.plan_new_project({"host": "gus", "name": "N", "dir": "d"})
+c1 = next(l["v"] for l in p1["lines"] if l["k"] == "Then types"); c2 = next(l["v"] for l in p2["lines"] if l["k"] == "Then types")
+check("first message: it is appended to the command, quoted; with none, the command is unchanged", c1.endswith("ccc 'it'\"'\"'s fine'") and c2.endswith("&& ccc") and any(l["k"] == "First message" for l in p1["lines"]) and not any(l["k"] == "First message" for l in p2["lines"]))
+for bad in ("two\nlines", "x" * 501, "bell\x07", 5):
+    try: srv.plan_new_project({"host": "gus", "name": "N", "dir": "d", "message": bad}); refused = False
+    except srv.HerdrError as e: refused = e.code == "bad_message"
+    if not refused: check(f"first message {bad!r:.20} refused", False)
+check("first message: newline, control character, non-string and over 500 characters are refused", True)
 
 sys.exit(0 if ok else 1)

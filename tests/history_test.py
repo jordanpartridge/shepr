@@ -2,6 +2,8 @@
 lines fall across the 256 KB read windows. Pure Python.  Run: python3 tests/history_test.py"""
 import importlib.util, json, os, sys, tempfile
 os.environ["SHEPR_STATE"] = tempfile.mkdtemp()
+for _k in ("SHEPR_NEW_CMD", "SHEPR_CLAUDE_CMD", "SHEPR_CODEX_CMD", "SHEPR_PROJECTS", "SHEPR_PUSH_ALLOW", "SHEPR_READONLY"): os.environ.pop(_k, None)   # a test pins its own settings, not the shell's
+os.environ["SHEPR_POLL"] = "15"
 here = os.path.dirname(os.path.abspath(__file__))
 spec = importlib.util.spec_from_file_location("shepr_server", os.path.join(here, "..", "server.py"))
 srv = importlib.util.module_from_spec(spec); spec.loader.exec_module(srv)

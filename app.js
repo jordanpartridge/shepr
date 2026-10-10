@@ -8,7 +8,7 @@
      3. No timer, retry or "auto" anything ever sends. A failed send is reported, never repeated.
      4. The private key never leaves the phone: it is generated non-extractable and only signs. */
 'use strict';
-const BUILD = 'v23';   // keep equal to sw.js VERSION: shown in Keys and logged by the host, so you can see which app a phone is running
+const BUILD = 'v24';   // keep equal to sw.js VERSION: shown in Keys and logged by the host, so you can see which app a phone is running
 
 // ---------------------------------------------------------------------------
 // 1. Service worker. Without this, a dead tailnet shows Safari's error page and
@@ -280,7 +280,7 @@ function fetchQueue(fresh) {
   fetching = true;
   $('mini').classList.add('busy');
   return api('api/queue' + (fresh ? '?fresh=1' : '')).then((q) => {
-    S.q = q; setOnline(!q.cached); render(); if (!q.cached) { appIsStale(q.build); updateBadge(); }
+    S.q = q; setOnline(!q.cached); render(); if (!q.cached) { appIsStale(q.build); updateBadge(); if (!S.ledgerAt || Date.now() - S.ledgerAt > 60000) loadLedger(); }
     // The app files can be newer than the server process behind them (files are served live, the server only changes when
     // it restarts). New buttons then fail in confusing ways, so say it plainly once.
     if (!q.cached && q.server_build && q.build && q.server_build !== q.build && !S.skewShown) {
@@ -448,6 +448,7 @@ function paintMain() {
       const nb = btn('', 'newbig', openNewProject); nb.id = 'newproject';
       nb.append(el('span', 'plus', '+'), el('span', 'lbl', 'Start new'), el('span', 'sub2', 'a new project'));
       m.append(nb);
+      const lg = ledgerStrip(); if (lg) m.append(lg);
     }
     if (!w.length && !d.length) {
       const e = el('div', 'empty');
@@ -477,6 +478,11 @@ function paintMain() {
   } else if (S.tab === 'all') {
     const list = agents().filter(inHost);
     let lastHost = null, i = 0;
+    const view = store.get('shepr.herdview', 'list') === 'radar' ? 'radar' : 'list';
+    const seg = el('div', 'seg'); seg.id = 'herdseg';
+    [['list', 'List'], ['radar', 'Radar']].forEach(([v, name]) => { const b = btn(name, 'mini-btn' + (v === view ? ' on' : ''), () => { store.set('shepr.herdview', v); paintMain(); }); b.dataset.v = v; seg.append(b); });
+    m.append(seg);
+    if (view === 'radar') { m.append(radarNode(list)); return finishMain(m, keep); }
     if (!list.length) m.append(el('div', 'empty', 'No sessions.'));
     list.slice().sort((a, b) => a.host.localeCompare(b.host) || nm(a).localeCompare(nm(b))).forEach((a) => {
       if (a.host !== lastHost) { m.append(section(a.host)); lastHost = a.host; }
@@ -524,6 +530,112 @@ $('refresh').addEventListener('click', () => { fetchQueue(true); if (S.tab === '
   m.addEventListener('touchend', end, { passive: true });
   m.addEventListener('touchcancel', () => { y0 = null; paint(0); }, { passive: true });
 })();
+
+// ---- the fleet radar. Centre = needs you. Rings outward: waiting, finished, working, idle. Each host owns a sector. Blocked
+// dots pulse and swell the longer they wait. Tap a dot to open that session. Every part of it carries a state.
+const RAD = { cx: 180, cy: 180, ring: { blocked: 62, done: 98, working: 134, idle: 166 } };
+function radarNode(list) {
+  const NS = 'http://www.w3.org/2000/svg', mk = (t, a, txt) => { const n = document.createElementNS(NS, t); Object.keys(a || {}).forEach((k) => n.setAttribute(k, a[k])); if (txt != null) n.textContent = txt; return n; };
+  const wrap = el('div', 'radarwrap');
+  const svg = mk('svg', { viewBox: '-14 -14 388 388', class: 'radar', role: 'group', 'aria-label': 'Fleet radar' });
+  Object.entries(RAD.ring).forEach(([st, r]) => { svg.append(mk('circle', { cx: RAD.cx, cy: RAD.cy, r, class: 'rring' })); svg.append(mk('text', { x: RAD.cx + 4, y: RAD.cy - r + 10, class: 'rringlbl' }, st === 'blocked' ? 'WAITING' : st.toUpperCase())); });
+  for (let a = 0; a < 360; a += 30) { const t = a * Math.PI / 180; svg.append(mk('line', { x1: RAD.cx, y1: RAD.cy, x2: RAD.cx + 176 * Math.sin(t), y2: RAD.cy - 176 * Math.cos(t), class: 'rspoke' })); }
+  const sweep = mk('g', { class: 'rsweep' }); sweep.append(mk('path', { d: 'M180 180 L180 4 A176 176 0 0 1 305 55 Z', class: 'rwedge' })); svg.append(sweep);
+  const hosts = [...new Set(list.map((a) => a.host))].sort();
+  const n = Math.max(1, hosts.length), span = 2 * Math.PI / n;
+  hosts.forEach((h, hi) => {
+    const a0 = hi * span;
+    if (n > 1) { const t = a0; svg.append(mk('line', { x1: RAD.cx, y1: RAD.cy, x2: RAD.cx + 178 * Math.sin(t), y2: RAD.cy - 178 * Math.cos(t), class: 'rsector' })); }
+    const mid = a0 + span / 2;
+    svg.append(mk('text', { x: RAD.cx + 188 * Math.sin(mid), y: RAD.cy - 188 * Math.cos(mid) + 4, class: 'rhost', 'text-anchor': Math.sin(mid) > 0.3 ? 'end' : Math.sin(mid) < -0.3 ? 'start' : 'middle' }, h));
+    ['blocked', 'done', 'working', 'idle'].forEach((st) => {
+      const grp = list.filter((a) => a.host === h && (a.status === st || (st === 'idle' && !['blocked', 'done', 'working'].includes(a.status))));
+      grp.forEach((a, k) => {
+        const f = (k + 0.5) / grp.length, ang = a0 + span * (0.12 + 0.76 * f), r = RAD.ring[st];
+        const x = RAD.cx + r * Math.sin(ang), y = RAD.cy - r * Math.cos(ang);
+        const g = mk('g', { class: 'rdot ' + st, tabindex: '0', role: 'button', 'aria-label': nm(a) + ', ' + (STATE_LABEL[a.status] || a.status) });
+        g.dataset.key = keyOf(a);
+        if (st === 'blocked') {
+          const mins = Math.min(240, Math.round((a.for_s || 0) / 60));
+          g.append(mk('circle', { cx: x, cy: y, r: 9 + Math.min(9, mins / 8), class: 'rpulse' }));
+          g.append(mk('circle', { cx: x, cy: y, r: 7 + Math.min(7, mins / 12), class: 'rcore' }));
+        } else g.append(mk('circle', { cx: x, cy: y, r: st === 'done' ? 6 : 4.5, class: 'rcore' }));
+        g.append(mk('circle', { cx: x, cy: y, r: 17, class: 'rhit' }));
+        if (st === 'blocked' || st === 'done') {
+          const txt = nm(a).length > 12 ? nm(a).slice(0, 11) + '…' : nm(a);
+          const right = Math.sin(ang) >= 0;
+          g.append(mk('text', { x: x + (right ? 14 : -14), y: y + 4, class: 'rlbl', 'text-anchor': right ? 'start' : 'end' }, txt));
+        }
+        gesture(g, { tap: () => openDetail(a.host, a.pane, 'all') });
+        svg.append(g);
+      });
+    });
+  });
+  const waiting = list.filter((a) => a.status === 'blocked').length;
+  svg.append(mk('text', { x: RAD.cx, y: RAD.cy + 8, class: 'rnum' + (waiting ? ' hot' : ''), 'text-anchor': 'middle' }, String(waiting)));
+  svg.append(mk('text', { x: RAD.cx, y: RAD.cy + 26, class: 'rcap', 'text-anchor': 'middle' }, waiting === 1 ? 'WAITING' : 'WAITING'));
+  wrap.append(svg);
+  const leg = el('div', 'rleg');
+  [['blocked', 'waiting on you'], ['done', 'finished'], ['working', 'working'], ['idle', 'idle']].forEach(([s, t]) => { const i = el('span', 'lg ' + s); i.append(el('i'), t); leg.append(i); });
+  wrap.append(leg);
+  if (!list.length) wrap.append(el('div', 'empty', 'No sessions.'));
+  return wrap;
+}
+const finishMain = (m, keep) => { m.scrollTop = keep; };
+
+// ---- the waiting ledger: how long agents sat blocked on you. A slim strip under Start new, and a sheet with the detail.
+const fmtDur = (s) => { s = Math.round(s); if (s < 60) return '<1m'; const m = Math.floor(s / 60); return m < 60 ? m + 'm' : Math.floor(m / 60) + 'h ' + String(m % 60).padStart(2, '0') + 'm'; };
+function loadLedger() {
+  return api('api/ledger').then((l) => { S.ledger = l; S.ledgerAt = Date.now(); if (S.tab === 'waiting' && !S.sheetOpen && !S.cur) paintMain(); }).catch(() => { /* a missing ledger just hides the strip */ });
+}
+function ledgerBars(days, w, h, gap) {
+  const NS = 'http://www.w3.org/2000/svg', svg = document.createElementNS(NS, 'svg');
+  svg.setAttribute('viewBox', '0 0 ' + w + ' ' + h); svg.setAttribute('aria-hidden', 'true');
+  const max = Math.max(1, ...days.map((d) => d.secs)), bw = (w - gap * (days.length - 1)) / days.length;
+  days.forEach((d, i) => {
+    const bh = d.secs ? Math.max(2, Math.round((h - 2) * d.secs / max)) : 2;
+    const r = document.createElementNS(NS, 'rect');
+    r.setAttribute('x', String(i * (bw + gap))); r.setAttribute('y', String(h - bh)); r.setAttribute('width', String(bw)); r.setAttribute('height', String(bh)); r.setAttribute('rx', '1.5');
+    r.setAttribute('class', i === days.length - 1 ? 'today' : 'past');
+    svg.append(r);
+  });
+  return svg;
+}
+function ledgerStrip() {
+  const L = S.ledger;
+  if (!L || !(L.today.n || L.now.n || L.days.some((d) => d.n))) return null;
+  const b = btn('', 'ledger', openLedger); b.id = 'ledger';
+  const t = el('div', 'lt');
+  t.append(el('div', 'l1', L.now.n ? 'WAITING NOW  ' + L.now.n + ' · ' + fmtDur(L.now.secs) : 'TODAY  ' + L.today.n + (L.today.n === 1 ? ' wait' : ' waits') + ' · ' + fmtDur(L.today.secs)),
+           el('div', 'l2', L.now.n ? 'today so far: ' + L.today.n + (L.today.n === 1 ? ' wait' : ' waits') + ' · ' + fmtDur(L.today.secs) : (L.today.longest ? 'longest ' + fmtDur(L.today.longest.secs) + ' · ' + L.today.longest.label : 'nothing waited on you yet')));
+  if (L.now.n) t.firstChild.classList.add('hot');
+  b.append(t, ledgerBars(L.days, 70, 28, 4));
+  return b;
+}
+function openLedger() {
+  const L = S.ledger; if (!L) return;
+  const box = el('div');
+  box.append(el('h3', null, 'Waiting on you'), el('div', 'sub', 'How long agents sat blocked on a question. Only waits Shepr watched from the first moment to the last are counted.'));
+  const chart = el('div', 'lchart');
+  const names = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+  const max = Math.max(1, ...L.days.map((d) => d.secs));
+  L.days.forEach((d, i) => {
+    const col = el('div', 'lcol' + (i === L.days.length - 1 ? ' today' : ''));
+    const bar = el('div', 'lbar'); bar.style.height = (d.secs ? Math.max(4, Math.round(70 * d.secs / max)) : 2) + 'px';
+    col.append(el('div', 'ln', d.n ? String(d.n) : ''), bar, el('div', 'ld', i === L.days.length - 1 ? 'today' : names[new Date(d.d + 'T12:00:00').getDay()]), el('div', 'lt2', d.secs ? fmtDur(d.secs) : ''));
+    chart.append(col);
+  });
+  box.append(chart);
+  if (L.now.n) box.append(el('div', 'warnbox', L.now.n + (L.now.n === 1 ? ' agent is' : ' agents are') + ' waiting on you right now, ' + fmtDur(L.now.secs) + ' in all.'));
+  if (L.today.top.length) {
+    box.append(el('div', 'sec', 'Longest waits today'));
+    const list = el('div', 'devbox');
+    L.today.top.forEach((w) => { const r = el('div', 'hrow'); const m = el('div', 'meta'); m.append(el('div', 'ttl', w.label), el('div', 'sub', w.host)); r.append(m, el('b', 'ldur', fmtDur(w.secs))); list.append(r); });
+    box.append(list);
+  }
+  const row = el('div', 'btns'); row.style.marginTop = '8px'; row.append(btn('Close', '', closeSheet)); box.append(row);
+  openSheet(box);
+}
 
 // ---- notifications: the host pushes "something changed", the service worker asks what and shows it
 const pushOK = () => 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
@@ -834,8 +946,8 @@ function openNewProject() {
              el('div', 'sub', 'Makes a new herdr project, creates its folder in ~/Projects, and starts ccc in it. You confirm first.'));
   const field = (label, input) => { const f = el('div', 'npf'); f.append(el('div', 'k', label), input); return f; };
   const mk = (ph, max) => { const i = el('input', 'search'); i.type = 'text'; i.placeholder = ph; i.maxLength = max; i.autocomplete = 'off'; i.autocapitalize = 'off'; i.spellcheck = false; return i; };
-  const name = mk('shows on the herdr title bar', 60), dir = mk('folder-name', 80);
-  name.id = 'np-name'; dir.id = 'np-dir';
+  const name = mk('shows on the herdr title bar', 60), dir = mk('folder-name', 80), first = mk('optional: what should Claude start on?', 500);
+  name.id = 'np-name'; dir.id = 'np-dir'; first.id = 'np-msg';
   const hostsOk = ((S.q && S.q.hosts) || []).filter((h) => h.status === 'ok');
   let sel = null;
   if (hostsOk.length > 1) {
@@ -844,7 +956,7 @@ function openNewProject() {
   }
   const where = el('div', 'dim'); where.style.cssText = 'font-size:14.5px;margin:2px 2px 10px;overflow-wrap:anywhere';
   let touched = false;
-  const go = btn('Review', 'go', () => prepare({ kind: 'new_project', host: sel ? sel.value : (S.hello && S.hello.name) || (hostsOk[0] && hostsOk[0].id), name: name.value.trim(), dir: dir.value.trim() }));
+  const go = btn('Review', 'go', () => prepare({ kind: 'new_project', host: sel ? sel.value : (S.hello && S.hello.name) || (hostsOk[0] && hostsOk[0].id), name: name.value.trim(), dir: dir.value.trim(), message: first.value.trim() || undefined }));
   const upd = () => {
     where.textContent = dir.value ? '~/Projects/' + dir.value : '';
     go.disabled = !(name.value.trim() && DIR_OK.test(dir.value.trim()) && !dir.value.trim().endsWith('.'));
@@ -852,7 +964,7 @@ function openNewProject() {
   };
   name.addEventListener('input', () => { if (!touched) dir.value = slug(name.value); upd(); });
   dir.addEventListener('input', () => { touched = true; upd(); });
-  box.append(field('Project name', name), field('Folder in ~/Projects', dir), ...(sel ? [field('Host', sel)] : []), where);
+  box.append(field('Project name', name), field('Folder in ~/Projects', dir), field('First message (optional)', first), ...(sel ? [field('Host', sel)] : []), where);
   const row = el('div', 'btns');
   row.append(btn('Cancel', '', closeSheet), go);
   box.append(row);
@@ -1818,4 +1930,4 @@ async function boot() {
   hideSplash(false);
 }
 boot();
-window.shepr = { S, ping, standalone, signHeaders, renderBlocks, appIsStale, BUILD, liveCut, syncHistory, prepareUpload };
+window.shepr = { S, ping, standalone, signHeaders, renderBlocks, appIsStale, BUILD, liveCut, syncHistory, prepareUpload, loadLedger, fmtDur };

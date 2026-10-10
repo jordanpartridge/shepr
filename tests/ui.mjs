@@ -565,8 +565,10 @@ const browser = await chromium.launch({ executablePath: '/usr/bin/chromium', arg
     check('new: an existing folder is flagged, and will be reused', /already exists/.test(await page.textContent('#sheet .kv')));
     await page.click('#sheet .btns button:first-child'); await page.waitForTimeout(300);
     await page.click('#newproject'); await page.waitForSelector('#np-name');
-    await page.fill('#np-name', 'Test Project X'); await page.click('#sheet .btns .go'); await page.waitForSelector('#sheet:not([hidden]) .kv');
+    const NASTY = `it's "quoted" $HOME \`whoami\` ; touch /tmp/shepr-pwned #done`;
+    await page.fill('#np-name', 'Test Project X'); await page.fill('#np-msg', NASTY); await page.click('#sheet .btns .go'); await page.waitForSelector('#sheet:not([hidden]) .kv');
     const kvn = await page.textContent('#sheet .kv');
+    check('new: the first message is shown on the confirm sheet', kvn.includes('First message') && kvn.includes(NASTY));
     console.log('   new project plan:', kvn.replace(/\s+/g, ' ').trim().slice(0, 260));
     check('new: the confirm sheet shows the name, the folder, and the exact command', /Test Project X/.test(kvn) && /\/tmp\/shepr-projects\/test-project-x/.test(kvn) && /will be created/.test(kvn) &&
       /mkdir -p \/tmp\/shepr-projects\/test-project-x && cd \/tmp\/shepr-projects\/test-project-x && echo CCC/.test(kvn));
@@ -579,9 +581,12 @@ const browser = await chromium.launch({ executablePath: '/usr/bin/chromium', arg
     check('new: the herdr project exists with the name on its title bar', !!ws);
     check('new: the folder was created', fs.existsSync('/tmp/shepr-projects/test-project-x'));
     check('new: the command ran in that terminal, in the new folder', out.includes('CCC') && /shepr-projects\/test-project-x/.test(out));
+    check('new: the first message reached the command EXACTLY, with nothing in it expanded or run', out.includes('CCC ' + NASTY) && !fs.existsSync('/tmp/shepr-pwned') && !out.includes('CCC it\'s "quoted" /home'));
     const prep = (body) => page.evaluate(async (b) => { const body = JSON.stringify(Object.assign({ host: window.shepr.S.hello.name, kind: 'new_project' }, b));
       const r = await fetch('api/send/prepare', { method: 'POST', body, headers: Object.assign({ 'Content-Type': 'application/json', 'X-Shepr': '1' }, await window.shepr.signHeaders('POST', 'api/send/prepare', body)) });
       return r.status + ' ' + (await r.text()); }, body);
+    const badMsgs = [await prep({ name: 'ok', dir: 'fine', message: 'two\nlines' }), await prep({ name: 'ok', dir: 'fine', message: 'x'.repeat(501) }), await prep({ name: 'ok', dir: 'fine', message: 'bell\u0007' }), await prep({ name: 'ok', dir: 'fine', message: 5 })];
+    check('new: the server refuses a first message with a newline, a control character, a non-string or over 500 characters', badMsgs.every((b) => /^400 /.test(b) && /bad_message/.test(b)));
     const bads = [await prep({ name: 'ok', dir: '../etc' }), await prep({ name: 'ok', dir: 'a/b' }), await prep({ name: 'ok', dir: '.x' }), await prep({ name: 'ok', dir: 'a;rm -rf' }),
                   await prep({ name: '', dir: 'fine' }), await prep({ name: 'x'.repeat(61), dir: 'fine' }), await prep({ name: 'bad\nname', dir: 'fine' }), await prep({ name: 'ok', dir: '' })];
     console.log('   refused:', JSON.stringify(bads.map((b) => b.slice(0, 18))));
@@ -651,6 +656,59 @@ const browser = await chromium.launch({ executablePath: '/usr/bin/chromium', arg
     await tap(page, '.tab[data-view=waiting]'); await page.waitForTimeout(300);
   }
 
+  // ---- the waiting ledger: a strip under Start new, a sheet behind it, hidden when there is nothing to show
+  {
+    const days = ['2026-10-04', '2026-10-05', '2026-10-06', '2026-10-07', '2026-10-08', '2026-10-09', '2026-10-10'].map((d, i) => ({ d, n: i % 3, secs: [0, 900, 0, 2700, 600, 1620, 4320][i] }));
+    const data = (now) => ({ today: { n: 4, secs: 4320, longest: { label: 'burnbar', secs: 2280 }, top: [{ label: 'burnbar', secs: 2280, host: 'gus' }, { label: 'clarity', secs: 1200, host: 'gus' }, { label: 'blip', secs: 840, host: 'vic' }] },
+      days, now: now || { n: 0, secs: 0 }, at: Date.now() / 1000 });
+    let L = data();
+    await page.route('**/api/ledger*', (route) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(L) }));
+    await tap(page, '.tab[data-view=waiting]'); await page.waitForTimeout(300);
+    await page.evaluate(() => window.shepr.loadLedger()); await page.waitForSelector('#ledger', { timeout: 6000 });
+    const txt = await page.textContent('#ledger');
+    check('ledger: a strip under Start new says how many waits today and for how long', /TODAY/.test(txt) && /4 waits/.test(txt) && /1h 12m/.test(txt) && /longest 38m/.test(txt) && /burnbar/.test(txt));
+    check('ledger: it sits right under the Start new button, with a 7-day mini chart', await page.evaluate(() => { const m = document.getElementById('main'); return m.children[1].id === 'ledger' && document.querySelectorAll('#ledger svg rect').length === 7 && document.querySelectorAll('#ledger svg rect.today').length === 1; }));
+    await page.screenshot({ path: `${OUT}/l1-ledger-strip.png` });
+    await page.click('#ledger'); await page.waitForSelector('#sheet:not([hidden]) .lchart');
+    const sh = await page.textContent('#sheet');
+    check('ledger: tapping it shows a 7-day chart and the longest waits today, by name and host', (await page.$$('#sheet .lcol')).length === 7 && /Longest waits today/.test(sh) && /burnbar/.test(sh) && /38m/.test(sh) && /vic/.test(sh));
+    await page.screenshot({ path: `${OUT}/l2-ledger-sheet.png` });
+    await page.evaluate(() => document.getElementById('shade').click()); await page.waitForTimeout(300);
+    L = data({ n: 2, secs: 780 }); await page.evaluate(() => window.shepr.loadLedger()); await page.waitForTimeout(500);
+    check('ledger: when agents are waiting right now the strip leads with that, in amber', /WAITING NOW\s+2/.test(await page.textContent('#ledger')) && /13m/.test(await page.textContent('#ledger')) && (await page.$('#ledger .l1.hot')) !== null);
+    L = { today: { n: 0, secs: 0, longest: null, top: [] }, days: days.map((d) => ({ ...d, n: 0, secs: 0 })), now: { n: 0, secs: 0 }, at: 1 };
+    await page.evaluate(() => window.shepr.loadLedger()); await page.waitForTimeout(500);
+    check('ledger: with nothing to report the strip is not shown at all', (await page.$('#ledger')) === null);
+    check('ledger: durations read well (under a minute, minutes, hours)', await page.evaluate(() => [20, 60, 2280, 3600, 4320, 7260].map(window.shepr.fmtDur).join('|') === '<1m|1m|38m|1h 00m|1h 12m|2h 01m'));
+    await page.unroute('**/api/ledger*');
+  }
+
+  // ---- the fleet radar (Herd tab, Radar view)
+  {
+    await tap(page, '.tab[data-view=all]'); await page.waitForTimeout(500);
+    check('radar: the Herd tab has a List / Radar switch, List by default', (await page.$$eval('#herdseg .mini-btn', (b) => b.map((x) => x.textContent + (x.classList.contains('on') ? '*' : '')))).join() === 'List*,Radar');
+    await page.click('#herdseg .mini-btn[data-v=radar]'); await page.waitForSelector('svg.radar');
+    const want = await page.evaluate(() => ({ all: window.shepr.S.q.agents.length, blocked: window.shepr.S.q.agents.filter((a) => a.status === 'blocked').length, working: window.shepr.S.q.agents.filter((a) => a.status === 'working').length }));
+    const got = await page.evaluate(() => ({ dots: document.querySelectorAll('.radar .rdot').length, blocked: document.querySelectorAll('.radar .rdot.blocked').length, pulses: document.querySelectorAll('.radar .rdot.blocked .rpulse').length,
+      working: document.querySelectorAll('.radar .rdot.working').length, centre: document.querySelector('.radar .rnum').textContent, hosts: [...document.querySelectorAll('.radar .rhost')].map((t) => t.textContent) }));
+    console.log('   radar:', JSON.stringify({ want, got }));
+    check('radar: one dot per session, in the right state, blocked ones pulsing', got.dots === want.all && got.blocked === want.blocked && got.pulses === want.blocked && got.working === want.working);
+    check('radar: the centre counts what is waiting on you, and the host is named on its sector', got.centre === String(want.blocked) && got.hosts.length >= 1);
+    check('radar: a waiting session is labelled by name on the radar', (await page.$$eval('.radar .rdot.blocked .rlbl', (t) => t.map((x) => x.textContent))).length === want.blocked);
+    check('radar: the page and the radar do not scroll sideways, and it fits without scrolling the page', await page.evaluate(() => { const r = document.querySelector('.radarwrap').getBoundingClientRect(); return document.documentElement.scrollWidth <= innerWidth + 1 && r.right <= innerWidth + 1 && r.left >= -1; }));
+    await page.screenshot({ path: `${OUT}/r1-radar.png` });
+    await tap(page, '.radar .rdot.blocked'); await page.waitForSelector('#detail:not([hidden])', { timeout: 5000 });
+    check('radar: tapping a dot opens that session', (await page.textContent('#dtitle')).length > 0);
+    await page.click('#dback').catch(() => {}); await page.waitForTimeout(400);
+    check('radar: the choice is remembered', (await page.evaluate(() => localStorage.getItem('shepr.herdview'))) === '"radar"' || (await page.evaluate(() => localStorage.getItem('shepr.herdview'))) === 'radar');
+    await page.emulateMedia({ reducedMotion: 'reduce' }); await page.waitForTimeout(200);
+    check('radar: with reduced motion on, the sweep and the pulses are still', await page.evaluate(() => getComputedStyle(document.querySelector('.radar .rsweep')).animationName === 'none' && getComputedStyle(document.querySelector('.radar .rpulse')).animationName === 'none'));
+    await page.emulateMedia({ reducedMotion: 'no-preference' });
+    await page.click('#herdseg .mini-btn[data-v=list]'); await page.waitForTimeout(300);
+    check('radar: switching back to List shows the list again', (await page.$$('#main .item')).length >= 3);
+    await tap(page, '.tab[data-view=waiting]'); await page.waitForTimeout(300);
+  }
+
   // ---- an app newer than its server: say so plainly instead of a confusing pane error
   {
     const prep = (kind) => page.evaluate(async (k) => { const body = JSON.stringify({ host: window.shepr.S.hello.name, kind: k });
@@ -705,7 +763,9 @@ const browser = await chromium.launch({ executablePath: '/usr/bin/chromium', arg
   await page.evaluate(() => window.shepr.S.q && fetch('api/queue').catch(() => 0));
   await page.evaluate(async () => { try { await window.fetch('api/queue', { headers: await window.shepr.signHeaders('GET', 'api/queue', '') }); } catch (e) {} });
   await tap(page, '#refresh').catch(() => {}); await page.click('#refresh');
-  await page.waitForSelector('#pair:not([hidden])', { timeout: 6000 });
+  // A refresh is ignored while a poll is already in flight, and the next poll is up to 10 s away: keep asking until the phone notices.
+  for (let k = 0; k < 14 && (await page.$eval('#pair', (n) => n.hidden)); k++) { await page.click('#refresh').catch(() => {}); await page.waitForTimeout(1000); }
+  await page.waitForSelector('#pair:not([hidden])', { timeout: 3000 });
   check('revoked phone is thrown back to the pairing screen', true);
   const rv = await page.evaluate(async () => (await fetch('api/queue', { headers: await window.shepr.signHeaders('GET', 'api/queue', '') })).status);
   check('revoked key is refused by the host', rv === 401);

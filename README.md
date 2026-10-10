@@ -109,6 +109,10 @@ the exact command, and what the `ccc` alias expands to on this host, and nothing
 the project in the background (it does not take over your screen) and types `mkdir -p ~/Projects/<folder> && cd
 ~/Projects/<folder> && ccc` into it. Override the command with `SHEPR_NEW_CMD` and the base folder with `SHEPR_PROJECTS`.
 
+An optional **First message** gives the new project its opening task: it is appended to the command as one quoted word
+(`ccc 'fix the login bug'`), so quotes, `$`, backticks and `;` in it are just text and can never run anything. One line, up to
+500 characters; the confirm sheet shows it.
+
 ### Photos and files
 
 The camera button next to the message box attaches a photo, a PDF or a plain text file (`txt md log json csv`) from your phone.
@@ -118,6 +122,31 @@ are refused), stored `0600` under `~/.local/state/shepr/uploads/<date>/` with a 
 (the folder is also kept under 300 MB). The saved path is then placed in the message box for you to add a note and Send, so
 uploading sends nothing to anyone and the confirm sheet shows the exact text. Claude Code reads a path like that as an
 image attachment. Sessions on another host are refused, because the file would be on the wrong machine. Up to 8 MB per file.
+
+### Notifications
+
+**Keys > Notifications > Turn on notifications** (iPhone only offers this to an app on the Home Screen, iOS 16.4 or later). Then
+an agent that blocks buzzes your phone, and the app icon shows how many are waiting. Optionally also when one finishes.
+How it works: the host sends an **empty** web push ("something changed"), signed with its own VAPID key (made once, kept `0600`).
+The phone's service worker then asks the host what changed, signed with the phone's key, and shows project names only, never a
+conversation title, because a notification can be read on a locked screen. So nothing about your sessions passes through Apple.
+The host only sends to the real push services (Apple, FCM, Mozilla, Windows), never to an address a phone makes up, never
+follows a redirect, and sends a phone at most one push every 20 seconds. Only blocked and finished states the host watched begin
+count, not what was already true when it started. Revoking a phone removes its subscription. Tapping a notification opens that session.
+
+### Waiting ledger
+
+A slim strip under **Start new** shows how long agents sat blocked on you today (`TODAY 4 waits · 1h 12m`, longest, and a 7-day
+mini chart). It turns amber and leads with **WAITING NOW** while something is blocked. Tap it for the week and the longest waits.
+Only waits the host watched from the first moment to the last are counted (a wait already going when the host started, or one that
+ended while it was not watching, is left out), one per blocked state, so a multi-step dialog is one wait. Kept 30 days in
+`waits.jsonl` (`0600`).
+
+### Fleet radar
+
+**Herd > Radar** is the same sessions as a radar. The centre is "needs you"; the rings run outward: waiting, finished, working,
+idle. Each host has its own sector. Waiting dots pulse, swell the longer they wait, and carry the project name. Tap a dot to open
+that session. With the iPhone's Reduce Motion on, the sweep and the pulses stand still.
 
 ### Wake a project that is asleep
 

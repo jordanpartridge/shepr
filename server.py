@@ -33,6 +33,7 @@ import json
 import os
 import re
 import secrets
+import shlex
 import shutil
 import socket
 import subprocess
@@ -332,7 +333,7 @@ def history_page(path, before):
     return got, (oldest if oldest > 0 else None), size, note
 
 
-def note_seen(host, agents, now):
+def note_seen(host, agents, now, ws=None):
     """Record the first time each blocked/done agent was seen in its current state."""
     hid = host["id"]
     hs = STATE["hosts"].setdefault(hid, {"watching_since": now, "last_ok": None})
@@ -351,12 +352,15 @@ def note_seen(host, agents, now):
             mt = transcript_mtime(a)
             if mt and mt < now:
                 t, basis = mt, "transcript"
-        STATE["seen"][key] = {"t": t, "exact": exact_ok, "basis": basis}
+        label = (ws or {}).get(a.get("workspace_id")) or os.path.basename((a.get("cwd") or a.get("foreground_cwd") or "").rstrip("/")) or a["pane_id"]
+        STATE["seen"][key] = {"t": t, "exact": exact_ok, "basis": basis, "label": label}
         if exact_ok:   # a transition we watched happen (not what was already true when the host started)
             PUSH_EVENTS.append(a["agent_status"])
         changed = True
     for key in [k for k in STATE["seen"] if k.startswith(hid + "|") and k not in live]:
-        del STATE["seen"][key]; changed = True
+        ent = STATE["seen"].pop(key); changed = True
+        if exact_ok and ent.get("exact") and key.endswith("|blocked"):   # a wait we watched from its first moment to its last
+            record_wait(hid, ent.get("label") or key.split("|")[1], ent["t"], now)
     hs["last_ok"] = now
     if changed or prev_ok is None or now - prev_ok > 60:
         try:
@@ -394,7 +398,7 @@ def _poll_host(host):
     except (HerdrError, KeyError, TypeError):
         ws = {}
     with LOCK:
-        note_seen(host, agents, now)
+        note_seen(host, agents, now, ws)
     return host, agents, ws, None
 
 
@@ -1555,7 +1559,13 @@ def plan_new_project(body):
     if not isinstance(d, str) or not DIR_RE.match(d) or d.endswith("."):
         raise HerdrError("bad_dir", "the folder must be one plain name: letters, digits, dot, dash or underscore, starting with a letter or digit")
     path = f"{PROJECTS_DIR.rstrip('/')}/{d}"
-    cmd = f"mkdir -p {path} && cd {path} && {NEW_CMD}"
+    msg = body.get("message")
+    if msg is not None:
+        if not isinstance(msg, str) or CTRL_RE.search(msg) or "\n" in msg or len(msg) > 500:
+            raise HerdrError("bad_message", "the first message must be one line of up to 500 characters")
+        msg = msg.strip() or None
+    # The message is data for the shell: quoted as ONE word, so quotes, $, backticks and ; in it can never run anything.
+    cmd = f"mkdir -p {path} && cd {path} && {NEW_CMD}" + (f" {shlex.quote(msg)}" if msg else "")
     lines = [("Title-bar name", name), ("Folder", path), ("Host", host["id"])]
     if host["kind"] == "local":
         real = os.path.expanduser(path)
@@ -1565,6 +1575,8 @@ def plan_new_project(body):
             lines.append(("Heads up", "a herdr project with this name already exists. A second one will be made."))
     except (HerdrError, KeyError, TypeError):
         pass
+    if msg:
+        lines.append(("First message", msg))
     lines.append(("Then types", cmd))
     ex = alias_expansion(NEW_CMD) if host["kind"] == "local" and NEW_CMD == "ccc" else None
     if ex:
@@ -1845,6 +1857,86 @@ def push_set_prefs(dev_id, body):
     return push_config(dev_id)
 
 
+
+# --------------------------------------------------------------------------------------------
+# the waiting ledger: how long agents sat blocked on a person. Each blocked state the poller WATCHED begin and end (not one
+# already true when the host started) becomes one line in waits.jsonl: who, when it began, when it ended.
+# --------------------------------------------------------------------------------------------
+WAIT_KEEP_DAYS = 30
+WAIT_MAX_S = 24 * 3600
+
+
+def record_wait(host_id, label, t0, t1):
+    dur = t1 - t0
+    if not 1 <= dur <= WAIT_MAX_S:
+        return
+    try:
+        os.makedirs(STATE_DIR, mode=0o700, exist_ok=True)
+        fd = os.open(state_path("waits.jsonl"), os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+        with os.fdopen(fd, "a") as f:
+            f.write(json.dumps({"t0": int(t0), "t1": int(t1), "host": host_id, "label": str(label)[:60]}) + "\n")
+    except OSError:
+        pass
+
+
+def read_waits(since):
+    out = []
+    try:
+        with open(state_path("waits.jsonl")) as f:
+            for line in f:
+                try:
+                    w = json.loads(line)
+                    if w["t1"] >= since:
+                        out.append(w)
+                except (ValueError, KeyError, TypeError):
+                    continue
+    except OSError:
+        pass
+    return out
+
+
+def prune_waits():
+    keep = read_waits(time.time() - WAIT_KEEP_DAYS * 86400)
+    try:
+        with open(state_path("waits.jsonl")) as f:
+            before = sum(1 for _ in f)
+    except OSError:
+        return
+    if len(keep) < before:
+        fd = os.open(state_path("waits.jsonl.tmp"), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as f:
+            for w in keep:
+                f.write(json.dumps(w) + "\n")
+        os.replace(state_path("waits.jsonl.tmp"), state_path("waits.jsonl"))
+
+
+def ledger_view(now=None, agents=None):
+    """Today and the last 7 days of waiting (local calendar days), plus who is waiting right now."""
+    now = now or time.time()
+    lt = time.localtime(now)
+    midnight = time.mktime((lt.tm_year, lt.tm_mon, lt.tm_mday, 0, 0, 0, 0, 0, -1))
+    days = []
+    for i in range(6, -1, -1):
+        d0 = time.mktime(time.localtime(midnight - i * 86400 + 12 * 3600)[:3] + (0, 0, 0, 0, 0, -1))
+        days.append({"d": time.strftime("%Y-%m-%d", time.localtime(d0 + 3600)), "start": d0, "n": 0, "secs": 0})
+    waits = read_waits(days[0]["start"])
+    today = []
+    for w in waits:
+        for dd in reversed(days):
+            if w["t1"] >= dd["start"]:
+                dd["n"] += 1; dd["secs"] += w["t1"] - w["t0"]
+                if dd is days[-1]:
+                    today.append(w)
+                break
+    top = sorted(today, key=lambda w: w["t0"] - w["t1"])[:5]
+    cur = [a for a in (agents or []) if a.get("status") == "blocked"]
+    return {"today": {"n": len(today), "secs": int(sum(w["t1"] - w["t0"] for w in today)),
+                      "longest": ({"label": top[0]["label"], "secs": int(top[0]["t1"] - top[0]["t0"])} if top else None),
+                      "top": [{"label": w["label"], "secs": int(w["t1"] - w["t0"]), "host": w["host"]} for w in top]},
+            "days": [{"d": d["d"], "n": d["n"], "secs": int(d["secs"])} for d in days],
+            "now": {"n": len(cur), "secs": int(sum(a.get("for_s", 0) for a in cur))}, "at": now}
+
+
 # --------------------------------------------------------------------------------------------
 # photos and files from the phone: stored privately on THIS host, the path comes back, and the person sends it to an agent
 # through the normal confirm sheet. Nothing is sent to an agent by uploading.
@@ -2095,6 +2187,8 @@ class Handler(SimpleHTTPRequestHandler):
                 if code is None:
                     raise HerdrError("not_subscribed", "this phone is not subscribed, or its push address is not allowed")
                 return self.json_out(200, {"ok": 200 <= code < 300, "status": code})
+            if not post and u.path == "/api/ledger":
+                return self.json_out(200, ledger_view(agents=build_queue()["agents"]))
             if post and u.path == "/api/upload":
                 if need_host(q.get("host", ""))["kind"] != "local":
                     raise HerdrError("remote_unsupported", "photos and files can only be sent to sessions on this host: the file is stored here")
@@ -2285,6 +2379,7 @@ def main():
         pass
     devices()
     load_push()
+    prune_waits()
     threading.Thread(target=poller, daemon=True).start()
     handler = functools.partial(Handler, directory=HERE)
     srv = CappedServer((a.bind, a.port), handler)

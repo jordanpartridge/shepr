@@ -3,6 +3,8 @@ empty body, the endpoint allow-list, pruning and the triggers are all checked fo
 Run: python3 tests/push_test.py"""
 import base64, http.server, importlib.util, json, os, sys, tempfile, threading, time
 os.environ["SHEPR_STATE"] = tempfile.mkdtemp()
+for _k in ("SHEPR_NEW_CMD", "SHEPR_CLAUDE_CMD", "SHEPR_CODEX_CMD", "SHEPR_PROJECTS", "SHEPR_PUSH_ALLOW", "SHEPR_READONLY"): os.environ.pop(_k, None)   # a test pins its own settings, not the shell's
+os.environ["SHEPR_POLL"] = "15"
 here = os.path.dirname(os.path.abspath(__file__))
 spec = importlib.util.spec_from_file_location("shepr_server", os.path.join(here, "..", "server.py"))
 srv = importlib.util.module_from_spec(spec); spec.loader.exec_module(srv)
