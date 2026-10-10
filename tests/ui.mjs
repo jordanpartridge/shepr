@@ -56,7 +56,7 @@ const browser = await chromium.launch({ executablePath: '/usr/bin/chromium', arg
   check('splash says who made it: MADE BY @nixfred', (await page.textContent('.smade')).replace(/\s/g, '') === 'MADEBY@nixfred');
   await page.waitForTimeout(300);  await page.screenshot({ path: `${OUT}/s1-splash-early.png` });
   await page.waitForTimeout(700);  await page.screenshot({ path: `${OUT}/s2-splash-mid.png` });
-  // the finished picture, as soon as it is finished (the splash holds for 3.5 s in all)
+  // the finished picture, as soon as it is finished (the splash holds for 5 s in all)
   const late = await page.waitForFunction(() => { const b = document.querySelector('.smade'); if (!b) return null;
     const r = { badge: +getComputedStyle(b).opacity, letters: [...document.querySelectorAll('.sword span')].map((s) => +getComputedStyle(s).opacity),
       typed: document.querySelector('.stag .ty').getBoundingClientRect().width, rule: document.querySelector('.srule').getBoundingClientRect().width, ver: document.getElementById('sver').textContent };
@@ -64,7 +64,7 @@ const browser = await chromium.launch({ executablePath: '/usr/bin/chromium', arg
   await page.screenshot({ path: `${OUT}/s3-splash-late.png` }).catch(() => {});
   check('splash: the badge, all five letters, the typed tagline and the rule all land before it leaves', !!late);
   check('splash: it shows the build number', !!late && /^v\d+$/.test(late.ver));
-  await page.waitForSelector('#splash', { state: 'detached', timeout: 6000 });
+  await page.waitForSelector('#splash', { state: 'detached', timeout: 9000 });
   check('splash removes itself', true);
   check('unpaired phone lands on the pairing screen', await page.isVisible('#pair'));
   check('no API data is shown while unpaired', (await page.$$('.item')).length === 0);
@@ -262,8 +262,8 @@ const browser = await chromium.launch({ executablePath: '/usr/bin/chromium', arg
   const x1 = await page.$eval('#tabind', (n) => getComputedStyle(n).transform);
   check('tab indicator slides', x0 !== x1);
   await page.screenshot({ path: `${OUT}/t1-herd.png` });
-  await tap(page, '.tab[data-view=go]'); await page.waitForSelector('#sheet:not([hidden]) .search');
-  check('Go tab opens Go To', true);
+  await hold(page, '.tab[data-view=waiting]', 900); await page.waitForSelector('#sheet:not([hidden]) .search');
+  check('Holding a tab opens Go To (the Go tab is gone)', true);
   await page.waitForTimeout(600);   // let the sheet finish sliding up before measuring it
   check('Go To sheet keeps its Close button on screen', await page.evaluate(() => { const b = document.querySelector('#sheet .btns button'); return b && b.getBoundingClientRect().bottom <= innerHeight; }));
   await page.screenshot({ path: `${OUT}/t2-goto.png` });
@@ -454,7 +454,7 @@ const browser = await chromium.launch({ executablePath: '/usr/bin/chromium', arg
     await page.click('#sheet .btns button:first-child'); await page.waitForTimeout(300);
     await page.fill('#msg', '');
     await page.click('#dback'); await page.waitForTimeout(400);
-    await tap(page, '.tab[data-view=go]'); await page.waitForSelector('#sheet:not([hidden]) .search'); await page.fill('#sheet .search', LONG); await page.waitForTimeout(300);
+    await hold(page, '.tab[data-view=waiting]', 900); await page.waitForSelector('#sheet:not([hidden]) .search'); await page.fill('#sheet .search', LONG); await page.waitForTimeout(300);
     await noSide('go-to (long search)');
     await page.evaluate(() => document.getElementById('shade').click()); await page.waitForTimeout(300);
     for (const v of ['all', 'hosts', 'keys']) { await tap(page, `.tab[data-view=${v}]`); await page.waitForTimeout(500); await noSide('tab ' + v); }
@@ -560,7 +560,7 @@ const browser = await chromium.launch({ executablePath: '/usr/bin/chromium', arg
     check('new: a big "Start new" button is the first thing in the queue', await page.evaluate(() => { const b = document.getElementById('newproject');
       return !!b && b === document.getElementById('main').firstElementChild && b.getBoundingClientRect().height >= 56 && /Start new/.test(b.textContent); }));
     await page.screenshot({ path: `${OUT}/a4-start-new-button.png` });
-    await page.click('#newproject'); await page.waitForSelector('#np-name');
+    await page.click('#newproject'); await page.waitForSelector('#np-name'); await page.waitForTimeout(250);   // the sheet focuses the name field after 50 ms; filling during that races it
     await page.screenshot({ path: `${OUT}/a5-start-new-empty.png` });
     check('new: Review is off until there is a name and a folder', await page.$eval('#sheet .btns .go', (b) => b.disabled));
     await page.fill('#np-name', 'Test Project X');
@@ -573,7 +573,7 @@ const browser = await chromium.launch({ executablePath: '/usr/bin/chromium', arg
     await page.fill('#np-dir', 'exists'); await page.click('#sheet .btns .go'); await page.waitForSelector('#sheet:not([hidden]) .kv');
     check('new: an existing folder is flagged, and will be reused', /already exists/.test(await page.textContent('#sheet .kv')));
     await page.click('#sheet .btns button:first-child'); await page.waitForTimeout(300);
-    await page.click('#newproject'); await page.waitForSelector('#np-name');
+    await page.click('#newproject'); await page.waitForSelector('#np-name'); await page.waitForTimeout(250);   // the sheet focuses the name field after 50 ms; filling during that races it
     const NASTY = `it's "quoted" $HOME \`whoami\` ; touch /tmp/shepr-pwned #done`;
     await page.fill('#np-name', 'Test Project X'); await page.fill('#np-msg', NASTY); await page.click('#sheet .btns .go'); await page.waitForSelector('#sheet:not([hidden]) .kv');
     const kvn = await page.textContent('#sheet .kv');
@@ -613,6 +613,7 @@ const browser = await chromium.launch({ executablePath: '/usr/bin/chromium', arg
     check('photo: the message bar has an attach button', !!(await page.$('#attachbtn')) && (await page.$eval('#attachbtn', (b) => b.getBoundingClientRect().height)) >= 44);
     await page.screenshot({ path: `${OUT}/p1-attach-button.png` });
     await page.setInputFiles('#filepick', { name: 'shot.png', mimeType: 'image/png', buffer: TINY_PNG });
+    await page.waitForSelector('#sheet:not([hidden]) .at-row'); await page.click('#at-go');
     await page.waitForFunction(() => /\/uploads\/.+\.png/.test(document.getElementById('msg').value), null, { timeout: 8000 });
     const m1 = await page.inputValue('#msg');
     const p1 = m1.trim().split(/\s+/).pop();
@@ -620,13 +621,41 @@ const browser = await chromium.launch({ executablePath: '/usr/bin/chromium', arg
     check('photo: the file on the host is the PNG, private (0600)', fs.existsSync(p1) && Buffer.compare(fs.readFileSync(p1), TINY_PNG) === 0 && (fs.statSync(p1).mode & 0o777) === 0o600);
     await page.fill('#msg', '');
     await page.setInputFiles('#filepick', { name: 'notes.txt', mimeType: 'text/plain', buffer: Buffer.from('line one\nline two\n') });
+    await page.waitForSelector('#sheet:not([hidden]) .at-row'); await page.click('#at-go');
     await page.waitForFunction(() => /\.txt/.test(document.getElementById('msg').value), null, { timeout: 8000 });
     const p2 = (await page.inputValue('#msg')).trim().split(/\s+/).pop();
     check('photo: a plain text file is stored as text', fs.readFileSync(p2, 'utf8') === 'line one\nline two\n');
     await page.fill('#msg', 'keep this');
     await page.setInputFiles('#filepick', { name: 'evil.exe', mimeType: 'application/octet-stream', buffer: Buffer.from('MZ\x90\x00 not allowed') });
+    await page.waitForSelector('#sheet:not([hidden]) .at-row'); await page.click('#at-go');
     await page.waitForFunction(() => /not a photo|will accept/.test(document.body.textContent), null, { timeout: 8000 });
+    await page.click('#sheet .btns button:not(.go)'); await page.waitForTimeout(300);
     check('photo: a program is refused with a reason, and the message box is untouched', (await page.inputValue('#msg')) === 'keep this');
+    // several photos at once, each with its own comment
+    await page.fill('#msg', 'Please look at these.');
+    const PNG2 = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR42mNgYAAAAAMAASsJTYQAAAAASUVORK5CYII=', 'base64');
+    await page.setInputFiles('#filepick', [{ name: 'a.png', mimeType: 'image/png', buffer: TINY_PNG }, { name: 'b.png', mimeType: 'image/png', buffer: PNG2 }, { name: 'c.png', mimeType: 'image/png', buffer: TINY_PNG }]);
+    await page.waitForSelector('#sheet:not([hidden]) .at-row');
+    const rows = await page.$$eval('.at-row', (n) => n.length);
+    check('photos: choosing three shows three rows, each with a thumbnail and a comment box', rows === 3 && (await page.$$eval('.at-row .at-th', (n) => n.length)) === 3 && (await page.$$eval('.at-row .at-c', (n) => n.length)) === 3);
+    check('photos: the sheet says how many', /Attach 3 photos/.test(await page.textContent('#sheet h3')));
+    await page.waitForTimeout(600);   // let the sheet finish sliding up
+    check('photos: the Cancel and Attach buttons are on screen with three photos listed', await page.evaluate(() => { const b = document.querySelector('#sheet .btns'); return b.getBoundingClientRect().bottom <= window.innerHeight + 1; }));
+    await page.screenshot({ path: `${OUT}/p2-attach-sheet.png` });
+    const cs = await page.$$('.at-c'); await cs[0].fill('the login screen'); await cs[2].fill('the error, in red');
+    await page.click('.at-row:nth-child(2) .at-x'); await page.waitForTimeout(200);
+    check('photos: a photo can be removed before it is uploaded, and the comments of the others stay', (await page.$$eval('.at-row', (n) => n.length)) === 2 && (await page.$$eval('.at-c', (n) => n.map((x) => x.value).join('|'))) === 'the login screen|the error, in red');
+    await page.click('#at-go'); await page.waitForFunction(() => /uploads\/.+\.png/.test(document.getElementById('msg').value) && document.getElementById('sheet').hidden, null, { timeout: 12000 });
+    const mm = (await page.inputValue('#msg')).split('\n');
+    console.log('   multi message:', JSON.stringify(mm));
+    check('photos: the box keeps what you had typed, then each path on its own line with its comment under it, in order', mm[0] === 'Please look at these.' && /\/uploads\/.+\.png$/.test(mm[1]) && mm[2] === 'Photo 1: the login screen' && /\/uploads\/.+\.png$/.test(mm[3]) && mm[4] === 'Photo 2: the error, in red');
+    check('photos: both files are on the host, private', [mm[1], mm[3]].every((f) => fs.existsSync(f) && (fs.statSync(f).mode & 0o777) === 0o600) && mm[1] !== mm[3]);
+    check('photos: nothing was sent to the agent, only put in the box (and kept as the draft)', (await page.evaluate(() => Object.values(JSON.parse(localStorage.getItem('shepr.drafts') || '{}')).some((d) => /Photo 2: the error/.test(d.t)))));
+    await page.setInputFiles('#filepick', [{ name: 'a.png', mimeType: 'image/png', buffer: TINY_PNG }, { name: 'a.png', mimeType: 'image/png', buffer: TINY_PNG }, { name: 'a.png', mimeType: 'image/png', buffer: TINY_PNG }, { name: 'a.png', mimeType: 'image/png', buffer: TINY_PNG }, { name: 'a.png', mimeType: 'image/png', buffer: TINY_PNG }, { name: 'a.png', mimeType: 'image/png', buffer: TINY_PNG }, { name: 'a.png', mimeType: 'image/png', buffer: TINY_PNG }, { name: 'a.png', mimeType: 'image/png', buffer: TINY_PNG }, { name: 'a.png', mimeType: 'image/png', buffer: TINY_PNG }, { name: 'a.png', mimeType: 'image/png', buffer: TINY_PNG }, { name: 'a.png', mimeType: 'image/png', buffer: TINY_PNG }, { name: 'a.png', mimeType: 'image/png', buffer: TINY_PNG }]);
+    await page.waitForSelector('#sheet:not([hidden]) .at-row');
+    check('photos: at most ten at a time', (await page.$$eval('.at-row', (n) => n.length)) === 10 && await page.$eval('.at-more', (b) => b.disabled));
+    await page.click('#sheet .btns button:not(.go)'); await page.waitForTimeout(300);
+    await page.fill('#msg', 'keep this');
     const big = await page.evaluate(async () => { const c = document.createElement('canvas'); c.width = 3200; c.height = 2400; const x = c.getContext('2d');
       for (let i = 0; i < 40; i++) { x.fillStyle = `hsl(${i * 9},80%,50%)`; x.fillRect(i * 80, (i % 7) * 340, 300, 600); }
       const blob = await new Promise((r) => c.toBlob(r, 'image/jpeg', 0.95)); const f = new File([blob], 'IMG_0001.JPG', { type: 'image/jpeg' });
@@ -752,27 +781,40 @@ const browser = await chromium.launch({ executablePath: '/usr/bin/chromium', arg
       kimi: { limitsLive: true, limitsMeasuredAt: now - 60000, limits: [row('Session (5-hour)', 0.0, 5 * H, 4 * H), row('Monthly (total)', 0.5, 30 * D, 15 * D), row('Monthly (code)', 0.5, 30 * D, 15 * D)] },
       grok: { limitsLive: false, limitsMeasuredAt: now - 5 * H, limits: [row('Weekly (7-day)', 0.02, 7 * D, 4.7 * D)] } };
     fs.writeFileSync(process.env.SHEPR_BURN || '/tmp/claude-1000/shepr-burn.json', JSON.stringify(fx));
-    await page.evaluate(() => { window.shepr.S.tab = 'waiting'; });
-    await tap(page, '.tab[data-view=all]'); await page.waitForSelector('.bd', { timeout: 8000 }); await page.waitForTimeout(500);
-    const cards = await page.$$eval('.bd', (n) => n.map((c) => ({ name: c.querySelector('.bd-n').textContent, verdict: c.querySelector('.bd-v').textContent, line: c.querySelector('.bd-l').textContent, svg: !!c.querySelector('svg.bd-svg path.bd-line'), rows: c.querySelectorAll('.bd-r').length, pct: c.querySelector('.bd-pct').textContent })));
-    console.log('   budget cards:', JSON.stringify(cards.map((c) => [c.name, c.verdict, c.pct, c.rows])));
-    check('budget: Claude, Codex, Kimi and Grok each get a card, in that order', cards.map((c) => c.name).join() === 'Claude,Codex,Kimi,Grok');
-    check('budget: Claude is 91% through its week with the clock at 86%, so it says BEHIND with a come-back time', cards[0].verdict === 'BEHIND' && /^Come back in/.test(cards[0].line) && /91%/.test(cards[0].pct));
-    check('budget: Codex has banked budget and says how much', /^BANKED \d+%$/.test(cards[1].verdict) && /in the bank$/.test(cards[1].line));
-    check('budget: Kimi on an even spend says ON PACE, and its duplicate "code" meter is not shown twice', cards[2].verdict === 'ON PACE' && cards[2].rows === 1);
-    check('budget: Grok is a snapshot, so its numbers are marked rough with ~', /^BANKED ~/.test(cards[3].verdict) && /^~/.test(cards[3].pct) && /snapshot/i.test(await page.textContent('.bd:nth-of-type(5) .bd-note').catch(() => '') || await page.evaluate(() => document.querySelectorAll('.bd')[3].textContent)));
-    check('budget: every card draws its burn-down graph', cards.every((c) => c.svg));
-    const c1 = await page.textContent('.bd:nth-of-type(3) .bd-l').catch(() => '');
-    const bankLine = () => page.evaluate(() => document.querySelectorAll('.bd')[1].querySelector('.bd-l').textContent);
-    const b0 = await bankLine(); await page.waitForTimeout(2300); const b1 = await bankLine();
-    check('budget: the banked clock ticks up on its own while you look at it', b0 !== b1);
-    check('budget: nothing on the radar page scrolls sideways', await page.evaluate(() => { const m = document.getElementById('main'); return m.scrollWidth <= m.clientWidth + 1 && document.documentElement.scrollWidth <= window.innerWidth; }));
-    check('budget: all four cards fit on screen beside the radar, so the page does not scroll (Law 17)', await page.evaluate(() => { const m = document.getElementById('main'); return m.scrollHeight <= m.clientHeight + 1; }));
+    // the radar page: the four counts on top (also its legend), the radar filling everything below, nothing to scroll
+    await tap(page, '.tab[data-view=all]'); await page.waitForSelector('svg.radar'); await page.waitForTimeout(700);
+    const rg = await page.evaluate(() => { const m = document.getElementById('main'), mr = m.getBoundingClientRect(), r = document.querySelector('svg.radar').getBoundingClientRect(), s = document.querySelector('.rstats').getBoundingClientRect();
+      return { tiles: [...document.querySelectorAll('.rstat')].map((t) => t.querySelector('b').textContent + ' ' + t.querySelector('.rl').textContent), radarShare: r.height / mr.height, scrolls: m.scrollHeight > m.clientHeight + 1, side: document.documentElement.scrollWidth > window.innerWidth, above: s.bottom <= r.top + 2, noBudget: !document.getElementById('budget') }; });
+    console.log('   radar page:', JSON.stringify(rg));
+    check('radar: four counts on top, Waiting Finished Working Idle, which are also the legend', rg.tiles.length === 4 && /Waiting/.test(rg.tiles[0]) && /Finished/.test(rg.tiles[1]) && /Working/.test(rg.tiles[2]) && /Idle/.test(rg.tiles[3]) && (await page.$('.rleg')) === null);
+    check('radar: the radar is back to the full page: it fills the screen under the counts, with nothing else under it, and nothing scrolls', rg.radarShare > 0.7 && rg.above && rg.noBudget && !rg.scrolls && !rg.side);
+    await page.screenshot({ path: `${OUT}/r1-radar-page.png` });
+    check('there is no Go tab any more: Queue, Radar, Subs, Hosts, Keys', (await page.$$eval('.tab', (n) => n.map((x) => x.dataset.view).join())) === 'waiting,all,subs,hosts,keys');
+    // the Subs page: every subscription listed with its numbers, no tap needed, and it animates in
+    await tap(page, '.tab[data-view=subs]'); await page.waitForSelector('.sc', { timeout: 10000 });
+    const anim = await page.evaluate(() => ({ enter: document.getElementById('budget').classList.contains('enter'), card: getComputedStyle(document.querySelector('.sc')).animationName, draw: getComputedStyle(document.querySelector('.sc .bd-line')).animationName, ping: getComputedStyle(document.querySelector('.sc .bd-ping')).animationName }));
+    check('subs: it arrives animated: the cards slide in, the curves draw themselves, and the current point pings', anim.enter && anim.card === 'scin' && anim.draw === 'scdraw' && anim.ping === 'scping');
+    await page.waitForTimeout(1400);
+    const cards = await page.$$eval('.sc', (n) => n.map((c) => ({ name: c.querySelector('.sc-n').textContent, verdict: c.querySelector('.sc-v').textContent, pct: c.querySelector('.sc-pct').textContent, line: c.querySelector('.sc-l').textContent, bars: c.querySelectorAll('.sc-r').length, svg: !!c.querySelector('svg.bd-svg path.bd-line'), note: (c.querySelector('.sc-note') || {}).textContent || '' })));
+    console.log('   subs cards:', JSON.stringify(cards.map((c) => [c.name, c.verdict, c.pct, c.bars])));
+    check('subs: Claude, Codex, Kimi and Grok each get a card, in that order', cards.map((c) => c.name).join() === 'Claude,Codex,Kimi,Grok');
+    check('subs: Claude is 91% through its week with the clock at 86%: BEHIND, with the come-back time already on the card', cards[0].verdict === 'BEHIND' && /91/.test(cards[0].pct) && /^Come back in/.test(cards[0].line));
+    check('subs: Codex shows what is banked and the clock of it without a tap', /^BANKED \d+%$/.test(cards[1].verdict) && /in the bank$/.test(cards[1].line));
+    check('subs: Kimi on an even spend says ON PACE', cards[2].verdict === 'ON PACE');
+    check('subs: Grok is a snapshot: ~ on its numbers and a note saying so', /^BANKED ~/.test(cards[3].verdict) && /^~/.test(cards[3].pct) && /snapshot/i.test(cards[3].note));
+    check('subs: every window is listed as a bar: Claude 3, Codex 1, Kimi 2 (its duplicate meter is not shown twice), Grok 1', cards.map((c) => c.bars).join() === '3,1,2,1');
+    check('subs: every card draws its burn-down graph', cards.every((c) => c.svg));
+    const l0 = await page.textContent('.sc[data-id=codex] .sc-l'); await page.waitForTimeout(2300); const l1 = await page.textContent('.sc[data-id=codex] .sc-l');
+    check('subs: the banked clock ticks up on its own', l0 !== l1);
+    await page.waitForTimeout(1500);
+    check('subs: the entrance plays once: after it, the animation class is gone, and a refresh does not replay it', await (async () => { const gone = await page.evaluate(() => !document.getElementById('budget').classList.contains('enter')); await page.click('#refresh'); await page.waitForTimeout(900); return gone && (await page.evaluate(() => !document.getElementById('budget').classList.contains('enter'))); })());
     await page.screenshot({ path: `${OUT}/b1-budget.png` });
-    await page.click('.bd[data-id=claude]'); await page.waitForTimeout(300);
-    check('budget: tapping a card opens it to show the clock and the other windows, and only that one', await page.evaluate(() => document.querySelectorAll('.bd.open').length === 1 && document.querySelector('.bd[data-id=claude]').classList.contains('open') && document.querySelectorAll('.bd[data-id=claude] .bd-r').length === 2));
-    await page.screenshot({ path: `${OUT}/b2-budget-open.png` });
-    await page.click('.bd[data-id=claude]'); await page.waitForTimeout(200);
+    await page.setViewportSize({ width: 390, height: 844 }); await page.waitForTimeout(500);
+    const fit = await page.evaluate(() => { const m = document.getElementById('main'); return { scrolls: m.scrollHeight > m.clientHeight + 1, over: m.scrollHeight - m.clientHeight, side: m.scrollWidth > m.clientWidth + 1 || document.documentElement.scrollWidth > window.innerWidth, clipped: [...document.querySelectorAll('.sc-n,.sc-v,.sc-rt')].filter((n) => n.scrollWidth > n.clientWidth + 1).length }; });
+    console.log('   subs fit at 390x844:', JSON.stringify(fit));
+    check('subs: on a full-size iPhone all four cards fit on the screen with nothing scrolling, and no word is cut off', !fit.scrolls && !fit.side && fit.clipped === 0);
+    await page.screenshot({ path: `${OUT}/b2-subs-tall.png` });
+    await page.setViewportSize({ width: 390, height: 664 }); await page.waitForTimeout(300);
     check('budget: pace maths agrees with Burn Bar (ahead banks, over 5% is behind, spent waits for the reset)', await page.evaluate(() => { const P = window.shepr.paceLive, n = 1000; const a = P(0.2, 2000, 1000, 1500), b = P(0.6, 2000, 1000, 1500), c = P(0.52, 2000, 1000, 1500), d = P(0.996, 2000, 1000, 1500); return Math.abs(a.banked - 0.3) < 1e-9 && b.over && b.comeBackMs === 100 && !c.over && c.behind > 0.01 && d.spent && d.comeBackMs === 500 && P(0.1, 2000, 1000, 2500) === null; }));
     await tap(page, '.tab[data-view=waiting]'); await page.waitForTimeout(300);
   }
@@ -796,6 +838,36 @@ const browser = await chromium.launch({ executablePath: '/usr/bin/chromium', arg
     check('drafts: clearing the box forgets the draft', !(await page.evaluate(() => JSON.parse(localStorage.getItem('shepr.drafts') || '{}'))[keys[1]]));
     await page.fill('#msg', '').catch(() => {});
     await openK(keys[0]); await page.fill('#msg', ''); await backK();
+  }
+
+  // ---- model and effort: a chip in the session header opens a sheet of buttons; the confirm sheet shows the exact line
+  {
+    const idle = await page.evaluate(() => { const a = window.shepr.S.q.agents.find((x) => x.agent === 'claude' && x.status === 'idle'); return a ? a.host + '|' + a.pane : null; });
+    const notIdle = await page.evaluate(() => { const a = window.shepr.S.q.agents.find((x) => x.agent === 'claude' && x.status === 'blocked'); return a ? a.host + '|' + a.pane : null; });
+    await tap(page, '.tab[data-view=waiting]'); await page.waitForTimeout(300);
+    if (notIdle) {
+      await tap(page, `.item[data-key="${notIdle}"]`); await page.waitForSelector('#detail:not([hidden])'); await page.waitForTimeout(400);
+      check('model: no model chip on a session that is waiting on a question', await page.$eval('#dmodel', (b) => b.hidden));
+      await page.click('#dback'); await page.waitForTimeout(300);
+    }
+    if (idle) {
+      await tap(page, `.item[data-key="${idle}"]`); await page.waitForSelector('#detail:not([hidden])'); await page.waitForTimeout(500);
+      check('model: an idle Claude session shows the Model chip', !(await page.$eval('#dmodel', (b) => b.hidden)));
+      await page.click('#dmodel'); await page.waitForSelector('.mdl-b', { timeout: 4000 });
+      const bs = await page.$$eval('.mdl-b', (n) => n.map((x) => x.dataset.value));
+      check('model: the sheet offers the four models and the five effort levels', bs.join() === 'fable,opus,sonnet,haiku,low,medium,high,xhigh,max');
+      await page.screenshot({ path: `${OUT}/m1-model-sheet.png` });
+      await page.click('.mdl-b[data-value=opus]'); await page.waitForSelector('#sheet:not([hidden]) .go', { timeout: 6000 });
+      const txt = await page.textContent('#sheet');
+      check('model: choosing Opus shows the exact line "/model opus" and says it is saved as the default', /\/model opus/.test(txt) && /default for new sessions/.test(txt));
+      await page.screenshot({ path: `${OUT}/m2-model-confirm.png` });
+      await page.click('#sheet .btns button:not(.go)').catch(() => {}); await page.waitForTimeout(300);
+      await page.click('#dmodel'); await page.waitForSelector('.mdl-b'); await page.click('.mdl-b[data-value=high]'); await page.waitForSelector('#sheet:not([hidden]) .go', { timeout: 6000 });
+      check('model: choosing an effort shows "/effort high"', /\/effort high/.test(await page.textContent('#sheet')));
+      await page.click('#sheet .btns button:not(.go)').catch(() => {}); await page.waitForTimeout(300);
+      await page.click('#dback').catch(() => {}); await page.waitForTimeout(300);
+    }
+    check('model: the running model and effort are read off the screen (status line and banner)', await page.evaluate(() => { const t = document.getElementById('tail'), keep = t.textContent, c = window.shepr.currentModel; t.textContent = 'x Opus 5.5·xhigh y'; const a = c(); t.textContent = ' Haiku 5.5 with low effort · Claude Max'; const b = c(); t.textContent = 'nothing here'; const n = c(); t.textContent = keep; return a.model === 'opus' && a.effort === 'xhigh' && b.model === 'haiku' && b.effort === 'low' && n === null; }));
   }
 
   // ---- "Type something": your own words (the fixture pane is static, so the CURSOR SAFETY CHECK is what is exercised here)
@@ -954,7 +1026,7 @@ const browser = await chromium.launch({ executablePath: '/usr/bin/chromium', arg
   const t0 = Date.now();
   await page.goto(BASE + '/'); await page.waitForSelector('#splash');
   check('quick splash: it still has the badge', (await page.textContent('.smade')).replace(/\s/g, '') === 'MADEBY@nixfred');
-  await page.waitForSelector('#splash', { state: 'detached', timeout: 6000 });
+  await page.waitForSelector('#splash', { state: 'detached', timeout: 9000 });
   const took = Date.now() - t0;
   console.log('   quick splash took', took, 'ms');
   check('quick splash: a second launch within 20 minutes is gone in under 2.5 s', took < 2500);

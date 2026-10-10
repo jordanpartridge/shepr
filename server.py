@@ -611,6 +611,10 @@ def need_host(hid):
     raise HerdrError("bad_host", f"unknown or unreachable host {hid!r}")
 
 
+CLAUDE_MODELS = ("fable", "opus", "sonnet", "haiku")
+CLAUDE_EFFORTS = ("low", "medium", "high", "xhigh", "max")
+
+
 def _typed_text(text):
     """Your own words for a "Type something" row: one line, no control characters (a newline would submit early, a tab would move)."""
     if text is None or (isinstance(text, str) and not text.strip()):
@@ -636,7 +640,7 @@ def build_plan(body):
     if body.get("kind") == "new_project":
         return plan_new_project(body)
     kind = body.get("kind")
-    if kind not in ("text", "keys", "choose", "multi"):
+    if kind not in ("text", "keys", "choose", "multi", "model", "effort"):
         raise HerdrError("bad_kind", f"this host's Shepr does not know the action {str(kind)[:30]!r}. It is older than the app on your "
                                      "phone: restart Shepr on the host so the two match.")
     host = need_host(str(body.get("host", "")))
@@ -662,6 +666,17 @@ def build_plan(body):
             lines = [("Sends as a prompt", text)]
             if status == "working":
                 lines.append(("Note", "the agent is working right now; Claude queues this until it is free"))
+    elif kind in ("model", "effort"):
+        # Claude Code takes /model <name> and /effort <level> as plain arguments (verified on 2.1.293): no menu, no model call.
+        if a.get("agent") != "claude":
+            raise HerdrError("not_claude", f"changing the {kind} from here only works for Claude Code sessions")
+        if status not in ("idle", "done"):
+            raise HerdrError("not_idle", f"change the {kind} while the agent is waiting for its next prompt, not while it is {status}")
+        value = body.get("value")
+        if value not in (CLAUDE_MODELS if kind == "model" else CLAUDE_EFFORTS):
+            raise HerdrError("bad_value", f"{str(value)[:20]!r} is not a {kind} Shepr offers")
+        steps = [{"op": "prompt", "text": f"/{kind} {value}"}]
+        lines = [("Sends", f"/{kind} {value}"), ("Note", f"changes this session's {kind}; Claude Code also makes it the default for new sessions")]
     elif kind == "keys":
         keys = body.get("keys")
         if not isinstance(keys, list) or not 1 <= len(keys) <= 8:
@@ -752,7 +767,7 @@ def build_plan(body):
                 ([("Then", f"{act['label']} (⏎)")] if advance else [("Then", "stays on the question")]) + \
                 [("By pressing", human_keys(keys))]
     else:
-        raise HerdrError("bad_kind", "kind must be text, keys, choose or multi")
+        raise HerdrError("bad_kind", "kind must be text, keys, choose, multi, model or effort")
 
     plan = {
         "nonce": secrets.token_urlsafe(18), "host": host["id"], "pane": pane, "kind": kind, "steps": steps, "made": time.time(),

@@ -8,7 +8,7 @@
      3. No timer, retry or "auto" anything ever sends. A failed send is reported, never repeated.
      4. The private key never leaves the phone: it is generated non-extractable and only signs. */
 'use strict';
-const BUILD = 'v28';   // keep equal to sw.js VERSION: shown in Keys and logged by the host, so you can see which app a phone is running
+const BUILD = 'v32';   // keep equal to sw.js VERSION: shown in Keys and logged by the host, so you can see which app a phone is running
 
 // ---------------------------------------------------------------------------
 // 1. Service worker. Without this, a dead tailnet shows Safari's error page and
@@ -323,12 +323,12 @@ const queueList = () => waiting().concat(finished(), working(), sleeping());
 const ICON = {
   waiting: '<path d="M6 9a6 6 0 0 1 12 0c0 6 2 7 2 7H4s2-1 2-7"/><path d="M10 19a2 2 0 0 0 4 0"/>',
   all: '<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="4.8"/><path d="M12 12 18.4 5.6"/><circle cx="16.2" cy="15.4" r="1.1" fill="currentColor" stroke="none"/>',
-  go: '<circle cx="12" cy="12" r="9"/><path d="m15.6 8.4-2.1 5.1-5.1 2.1 2.1-5.1z"/>',
+  subs: '<path d="M3.5 17a8.5 8.5 0 0 1 17 0"/><path d="m12 17 4.2-5.4"/><circle cx="12" cy="17" r="1.3" fill="currentColor" stroke="none"/><path d="M6.2 12.6l1 .7M17.8 12.6l-1 .7M12 8.5v1.2"/>',
   hosts: '<rect x="3.5" y="4" width="17" height="6.5" rx="2"/><rect x="3.5" y="13.5" width="17" height="6.5" rx="2"/><path d="M7 7.25h.01M7 16.75h.01"/>',
   keys: '<circle cx="8" cy="15.5" r="4"/><path d="m10.9 12.6 8.1-8.1M16 7.5l2.5 2.5M13.4 10.1l1.6 1.6"/>',
 };
 const TABS = [
-  { id: 'waiting', label: 'Queue' }, { id: 'all', label: 'Radar' }, { id: 'go', label: 'Go', action: true },
+  { id: 'waiting', label: 'Queue' }, { id: 'all', label: 'Radar' }, { id: 'subs', label: 'Subs' },
   { id: 'hosts', label: 'Hosts' }, { id: 'keys', label: 'Keys' },
 ];
 function buildTabs() {
@@ -466,6 +466,8 @@ function paintMain() {
   const m = $('main');
   const keep = m.scrollTop;
   m.textContent = '';
+  m.classList.toggle('radarpage', S.tab === 'all');   // the radar page is one fixed screen: the numbers on top, the radar filling the rest
+  if (S.tab !== 'subs') BUD.fresh = true;   // the Subs page animates in each time you arrive, not on every refresh
   if (S.tab === 'waiting') {
     const w = waiting(), d = finished(), sl = sleeping(), wk = working();
     if (S.q && S.q.writes) {   // the one big button: a brand-new project (name, folder, ccc)
@@ -501,7 +503,10 @@ function paintMain() {
     }
   } else if (S.tab === 'all') {
     m.append(radarNode(agents().filter(inHost)));   // the Queue already lists every session by state; this shows the fleet at a glance
-    const bw = el('div', 'budget'); bw.id = 'budget'; m.append(bw); paintBudget(); fetchBudget(false);
+  } else if (S.tab === 'subs') {
+    const root = el('div', 'subs' + (BUD.fresh ? ' enter' : '')); root.id = 'budget'; m.append(root);
+    if (BUD.fresh) { BUD.fresh = false; setTimeout(() => root.classList.remove('enter'), 2600); }
+    paintBudget(); fetchBudget(false);
   } else if (S.tab === 'hosts') {
     paintHostsView(m);
   } else {
@@ -545,10 +550,10 @@ $('refresh').addEventListener('click', () => { fetchQueue(true); if (S.tab === '
   m.addEventListener('touchcancel', () => { y0 = null; paint(0); }, { passive: true });
 })();
 
-// ---- subscription budget. Burn Bar measures each plan on the host; this shows it under the radar. Budget means an even spend
-// across the plan's window: if you have used less than the clock has, the difference is BANKED; more, and you are BEHIND, with
-// a countdown to when the clock catches up if you stop. Same rules as Burn Bar's own panel, so the two always agree.
-const BUD = { data: null, at: 0, busy: false, ticks: [], err: '', open: '' };
+// ---- subscriptions (the Subs tab). Burn Bar measures each plan on the host; this lists all of them at once. Budget means an even spend
+// across the plan's window: if you have used less than the clock has, the difference is BANKED; more, and you are BEHIND, with a
+// countdown to when the clock catches up if you stop. Same rules as Burn Bar's own panel, so the two always agree.
+const BUD = { data: null, at: 0, busy: false, ticks: [], err: '', fresh: true };
 const serverNow = () => Date.now() + (S.skew || 0);   // the host's clock: the resets are in its time
 const two = (n) => String(n).padStart(2, '0');
 function clockSpan(ms) { const t = Math.max(0, Math.floor(ms / 1000)), d = Math.floor(t / 86400), h = Math.floor(t % 86400 / 3600), m = Math.floor(t % 3600 / 60), sec = t % 60; return (d ? d + 'd ' + two(h) : String(h)) + ':' + two(m) + ':' + two(sec); }
@@ -572,10 +577,11 @@ function budgetVerdict(live, rough) {
   return { tone: 'accent', word: 'ON PACE', line: 'Even with the clock. Carry on.' };
 }
 function budgetRowName(l) { return l.replace(/\s*\(([^)]*)\)/, ' $1').replace(/\bWeekly 7-day\b/, 'Week').replace(/\bSession 5-hour\b/, '5-hour session').replace(/\bMonthly total\b/, 'Month'); }
+const GW = 260, GH = 50;
 function budgetGraph(row, live, tone, gid) {
   const NS = 'http://www.w3.org/2000/svg', mk = (t, a) => { const n = document.createElementNS(NS, t); Object.keys(a || {}).forEach((k) => n.setAttribute(k, a[k])); return n; };
-  const X0 = 4, X1 = 196, Y0 = 60, Y1 = 4, X = (e) => (X0 + Math.max(0, Math.min(1, e)) * (X1 - X0)).toFixed(1), Y = (u) => (Y0 - Math.max(0, Math.min(1, u)) * (Y0 - Y1)).toFixed(1);
-  const svg = mk('svg', { viewBox: '0 0 200 64', class: 'bd-svg', preserveAspectRatio: 'none', role: 'img', 'aria-label': 'Burn-down: plan used against the clock' });
+  const X0 = 4, X1 = GW - 4, Y0 = GH - 4, Y1 = 4, X = (e) => (X0 + Math.max(0, Math.min(1, e)) * (X1 - X0)).toFixed(1), Y = (u) => (Y0 - Math.max(0, Math.min(1, u)) * (Y0 - Y1)).toFixed(1);
+  const svg = mk('svg', { viewBox: '0 0 ' + GW + ' ' + GH, class: 'bd-svg', preserveAspectRatio: 'none', role: 'img', 'aria-label': 'Burn-down: plan used against the clock' });
   const col = 'var(--' + tone + ')';
   const defs = mk('defs'), grad = mk('linearGradient', { id: gid, x1: 0, y1: 0, x2: 0, y2: 1 });
   grad.append(mk('stop', { offset: '0%', 'stop-color': col, 'stop-opacity': '.55' }), mk('stop', { offset: '100%', 'stop-color': col, 'stop-opacity': '0' })); defs.append(grad); svg.append(defs);
@@ -585,8 +591,8 @@ function budgetGraph(row, live, tone, gid) {
   if (live) pts.push([live.elapsed, live.used]);
   if (pts.length >= 2) {
     const line = pts.map((q, i) => (i ? 'L' : 'M') + X(q[0]) + ' ' + Y(q[1])).join(' ');
-    svg.append(mk('path', { d: line + ' L' + X(pts[pts.length - 1][0]) + ' ' + Y(0) + ' L' + X(pts[0][0]) + ' ' + Y(0) + ' Z', fill: 'url(#' + gid + ')' }));
-    svg.append(mk('path', { d: line, class: 'bd-line', stroke: col }));
+    svg.append(mk('path', { d: line + ' L' + X(pts[pts.length - 1][0]) + ' ' + Y(0) + ' L' + X(pts[0][0]) + ' ' + Y(0) + ' Z', fill: 'url(#' + gid + ')', class: 'bd-area' }));
+    svg.append(mk('path', { d: line, class: 'bd-line', stroke: col, pathLength: '1' }));
   }
   if (live) {
     svg.append(mk('line', { x1: X(live.elapsed), x2: X(live.elapsed), y1: Y1, y2: Y0, class: 'bd-now' }));
@@ -594,31 +600,33 @@ function budgetGraph(row, live, tone, gid) {
       const pj = Math.min(1.15, row.projected), over = row.projected > 1;
       svg.append(mk('line', { x1: X(live.elapsed), y1: Y(live.used), x2: X1, y2: Y(pj), class: 'bd-proj' + (over ? ' over' : '') }));
     }
-    svg.append(mk('circle', { cx: X(live.elapsed), cy: Y(live.used), r: 7, fill: col, opacity: '.18' }), mk('circle', { cx: X(live.elapsed), cy: Y(live.used), r: 3.4, fill: col, stroke: '#05080c', 'stroke-width': 1.2 }));
+    svg.append(mk('circle', { cx: X(live.elapsed), cy: Y(live.used), r: 5, fill: 'none', stroke: col, 'stroke-width': 1.5, class: 'bd-ping' }), mk('circle', { cx: X(live.elapsed), cy: Y(live.used), r: 3.4, fill: col, stroke: '#05080c', 'stroke-width': 1.2 }));
   }
   return svg;
 }
-function budgetCard(ag) {
+// A number that climbs to its value, once, when the page arrives. Reduce Motion goes straight to the answer.
+function countUp(node, to, prefix, ms) {
+  if (REDUCED) { node.textContent = prefix + to; return; }
+  const t0 = performance.now();
+  (function step(t) { const k = Math.min(1, (t - t0) / ms), e = 1 - Math.pow(1 - k, 3); node.textContent = prefix + Math.round(to * e); if (k < 1) requestAnimationFrame(step); })(t0);
+}
+// One subscription, everything visible: the verdict, the burn-down, the clock and every window as a bar with a marker for the clock.
+function subCard(ag, i, enter) {
   const rows = ag.rows.slice().sort((a, b) => (b.window_ms - a.window_ms) || (b.used - a.used));
-  const prim = rows[0], rest = rows.slice(1), rough = !ag.live;
-  const card = el('div', 'bd' + (BUD.open === ag.id ? ' open' : '')); card.dataset.id = ag.id;
-  const top = el('div', 'bd-top'), idc = el('div', 'bd-id'), nm = el('div', 'bd-n', ag.name), big = el('div', 'bd-pct'), gwrap = el('div', 'bd-g'), vc = el('div', 'bd-vc'), vd = el('div', 'bd-v'), plabel = el('div', 'bd-w');
-  big.append(el('span', null, ''), el('small', null, 'used'));
-  idc.append(nm, big); vc.append(vd, plabel); top.append(idc, gwrap, vc); card.append(top);
-  if (!prim) { card.style.setProperty('--tone', 'var(--dim)'); vd.textContent = 'NO DATA'; plabel.textContent = ag.status || ag.help || 'No plan limits reported.'; big.hidden = true; return card; }
-  const more = el('div', 'bd-more'), line = el('div', 'bd-l');
-  more.append(line);
-  const subs = rest.map((r) => { const w = el('div', 'bd-r'), nmx = el('span', 'bd-rn', budgetRowName(r.label)), tr = el('span', 'bd-bar'), fill = el('i'), tick = el('b'), tx = el('span', 'bd-rt'); tr.append(fill, tick); w.append(nmx, tr, tx); more.append(w); return { r, fill, tick, tx, w }; });
-  const note = el('div', 'bd-note'); more.append(note); card.append(more);
-  card.addEventListener('click', () => { BUD.open = BUD.open === ag.id ? '' : ag.id; document.querySelectorAll('.bd').forEach((c) => c.classList.toggle('open', c.dataset.id === BUD.open)); });
-  plabel.textContent = budgetRowName(prim.label);
-  const gid = 'bdg-' + ag.id;
+  const prim = rows[0], rough = !ag.live;
+  const card = el('div', 'sc'); card.dataset.id = ag.id; card.style.setProperty('--i', i);
+  const head = el('div', 'sc-h'), nm = el('span', 'sc-n', ag.name), vd = el('span', 'sc-v'); head.append(nm, vd); card.append(head);
+  if (!prim) { card.style.setProperty('--tone', 'var(--dim)'); vd.textContent = 'NO DATA'; card.append(el('div', 'sc-l', ag.status || ag.help || 'No plan limits reported.')); return card; }
+  const mid = el('div', 'sc-m'), big = el('div', 'sc-pct'), num = el('span', 'sc-num'), gwrap = el('div', 'sc-g'), line = el('div', 'sc-l');
+  big.append(num, el('small', null, '% used')); mid.append(big, gwrap); card.append(mid, line);
+  const bars = rows.map((r) => { const w = el('div', 'sc-r'), nmx = el('span', 'sc-rn', budgetRowName(r.label)), tr = el('span', 'sc-bar'), fill = el('i'), tick = el('b'), tx = el('span', 'sc-rt'); tr.append(fill, tick); w.append(nmx, tr, tx); card.append(w); return { r, fill, tick, tx, w }; });
+  const note = el('div', 'sc-note'); card.append(note);
+  const gid = 'scg-' + ag.id, prefix = rough ? '~' : '';
   function paint(first) {
     const now = serverNow(), live = paceLive(prim.used, prim.resets_ms, prim.window_ms, now), v = budgetVerdict(live, rough);
-    card.style.setProperty('--tone', 'var(--' + v.tone + ')'); vd.textContent = v.word; line.textContent = v.line;
-    big.firstChild.textContent = (rough ? '~' : '') + Math.round(prim.used * 100) + '%';
-    if (first) { gwrap.textContent = ''; gwrap.append(budgetGraph(prim, live, v.tone, gid)); }
-    subs.forEach((x) => { const lv = paceLive(x.r.used, x.r.resets_ms, x.r.window_ms, now), sv = budgetVerdict(lv, rough); x.fill.style.width = Math.round(Math.min(1, x.r.used) * 100) + '%'; x.tick.style.left = lv ? Math.round(lv.elapsed * 100) + '%' : '0%'; x.tick.hidden = !lv; x.w.style.setProperty('--tone', 'var(--' + sv.tone + ')'); x.tx.textContent = Math.round(x.r.used * 100) + '% · ' + sv.word.toLowerCase(); });
+    card.style.setProperty('--tone', 'var(--' + v.tone + ')'); card.dataset.tone = v.tone; vd.textContent = v.word; line.textContent = v.line;
+    if (first) { if (enter) countUp(num, Math.round(prim.used * 100), prefix, 900); else num.textContent = prefix + Math.round(prim.used * 100); gwrap.textContent = ''; gwrap.append(budgetGraph(prim, live, v.tone, gid)); }
+    bars.forEach((x) => { const lv = paceLive(x.r.used, x.r.resets_ms, x.r.window_ms, now), sv = budgetVerdict(lv, rough); x.fill.style.width = Math.round(Math.min(1, x.r.used) * 100) + '%'; x.tick.style.left = lv ? Math.round(lv.elapsed * 100) + '%' : '0%'; x.tick.hidden = !lv; x.w.style.setProperty('--tone', 'var(--' + sv.tone + ')'); x.tx.textContent = Math.round(x.r.used * 100) + '% · ' + sv.word.toLowerCase(); });
     const age = ag.measured_at ? now - ag.measured_at : 0;
     note.textContent = rough ? 'A snapshot from ' + (ag.measured_at ? new Date(ag.measured_at).toLocaleString([], { weekday: 'short', hour: 'numeric', minute: '2-digit' }) : 'when it last started') + ', so the numbers are rough.'
       : (age > 20 * 60000 ? 'Last measured ' + spanWords(age) + ' ago.' : '');
@@ -630,20 +638,19 @@ function budgetCard(ag) {
 function paintBudget() {
   const host = $('budget'); if (!host) return;
   BUD.ticks = []; host.textContent = '';
-  const d = BUD.data;
+  const d = BUD.data, enter = host.classList.contains('enter');
   if (!d) { host.append(el('div', 'bd-empty', BUD.err ? 'Subscription budget unavailable: ' + BUD.err : 'Reading your subscriptions…')); return; }
   if (!d.available) { host.append(el('div', 'bd-empty', d.reason || 'No subscription data on this host.')); return; }
-  const h = el('div', 'sec bd-sec'); h.append(el('span', null, 'Subscriptions'), el('span', 'bd-sub', 'tap one for the clock')); host.append(h);
-  d.agents.forEach((ag) => host.append(budgetCard(ag)));
+  d.agents.forEach((ag, i) => host.append(subCard(ag, i, enter)));
 }
 async function fetchBudget(force) {
-  if (BUD.busy || !S.dev || (!force && Date.now() - BUD.at < 20000)) return;
+  if (BUD.busy || !S.dev || (!force && Date.now() - BUD.at < (BUD.data && BUD.data.available ? 20000 : 3000))) return;
   BUD.busy = true;
   try { BUD.data = await api('api/budget'); BUD.at = Date.now(); BUD.err = ''; } catch (e) { BUD.err = e.message || 'failed'; } finally { BUD.busy = false; }
   paintBudget();
 }
-setInterval(() => { if (S.tab === 'all' && !document.hidden && $('detail').hidden && !S.sheetOpen) fetchBudget(true); }, 30000);
-setInterval(() => { if (S.tab === 'all' && !document.hidden && $('detail').hidden) BUD.ticks.forEach((f) => f()); }, 1000);
+setInterval(() => { if (S.tab === 'subs' && !document.hidden && $('detail').hidden && !S.sheetOpen) fetchBudget(true); }, 30000);
+setInterval(() => { if (S.tab === 'subs' && !document.hidden && $('detail').hidden) BUD.ticks.forEach((f) => f()); }, 1000);
 
 // ---- the fleet radar. Centre = needs you. Rings outward: waiting, finished, working, idle. Each host owns a sector. Blocked
 // dots pulse and swell the longer they wait. Tap a dot to open that session. Every part of it carries a state.
@@ -692,10 +699,15 @@ function radarNode(list) {
   svg.append(centre);
   svg.append(mk('text', { x: RAD.cx, y: RAD.cy + 8, class: 'rnum' + (waiting ? ' hot' : ''), 'text-anchor': 'middle' }, String(waiting)));
   svg.append(mk('text', { x: RAD.cx, y: RAD.cy + 26, class: 'rcap', 'text-anchor': 'middle' }, waiting === 1 ? 'WAITING' : 'WAITING'));
+  // The numbers above the radar: also its legend (each tile is the colour of its dots), and how long the longest wait has been.
+  const by = (st) => list.filter((a) => a.status === st), longest = Math.max(0, ...by('blocked').map((a) => a.for_s || 0));
+  const stats = el('div', 'rstats');
+  [['blocked', 'Waiting', longest ? 'longest ' + fmtAge(longest, true).main : 'nothing'], ['done', 'Finished', 'to read'], ['working', 'Working', 'busy now'], ['idle', 'Idle', 'free']].forEach(([st, lbl, sub], k) => {
+    const t = el('div', 'rstat ' + st), n = el('b', null, String(by(st).length)); t.style.setProperty('--k', k);
+    t.append(n, el('span', 'rl', lbl), el('span', 'rs', sub)); stats.append(t);
+  });
+  wrap.append(stats);
   wrap.append(svg);
-  const leg = el('div', 'rleg');
-  [['blocked', 'waiting on you'], ['done', 'finished'], ['working', 'working'], ['idle', 'idle']].forEach(([s, t]) => { const i = el('span', 'lg ' + s); i.append(el('i'), t); leg.append(i); });
-  wrap.append(leg);
   if (!list.length) wrap.append(el('div', 'empty', 'No sessions.'));
   return wrap;
 }
@@ -1290,6 +1302,40 @@ function closeDetail() {
   fetchQueue(true);
 }
 
+
+// ---- model and effort. Claude Code takes "/model opus" and "/effort high" as plain arguments, so this only sends those two lines
+// (after the usual confirm sheet), and only to a Claude session that is waiting for its next prompt. Claude Code also saves the
+// choice as the default for new sessions on that host, and the confirm sheet says so.
+const MODELS = [['fable', 'Fable'], ['opus', 'Opus'], ['sonnet', 'Sonnet'], ['haiku', 'Haiku']];
+const EFFORTS = [['low', 'low'], ['medium', 'medium'], ['high', 'high'], ['xhigh', 'xhigh'], ['max', 'max']];
+// What the session says it is running, read off the screen: the status line ("Opus 5.5·high") or the banner ("Opus 5.5 with high effort").
+function currentModel() {
+  const t = $('tail').textContent || '', all = (re) => { let m, last = null; const g = new RegExp(re.source, 'gi'); while ((m = g.exec(t))) last = m; return last; };
+  const a = all(/\b(Fable|Opus|Sonnet|Haiku)\b[^\n·]{0,8}·\s*(low|medium|high|xhigh|max)\b/), b = all(/\b(Fable|Opus|Sonnet|Haiku)\b [\d.]+ with (low|medium|high|xhigh|max) effort/), m = a || b;
+  return m ? { model: m[1].toLowerCase(), effort: m[2].toLowerCase() } : null;
+}
+function paintModelChip(a) {
+  const b = $('dmodel'); if (!b) return;
+  const ok = !!(a && a.agent === 'claude' && (a.status === 'idle' || a.status === 'done') && S.q && S.q.writes);
+  b.hidden = !ok; if (!ok) return;
+  const cur = currentModel();
+  b.textContent = cur ? cur.model.charAt(0).toUpperCase() + cur.model.slice(1) + '·' + cur.effort : 'Model';
+}
+function openModelSheet() {
+  const cur = currentModel(), box = el('div');
+  box.append(el('h3', null, 'Model and effort'), el('div', 'sub', (cur ? 'Running ' + cur.model + ' at ' + cur.effort + ' effort. ' : '') + 'You see the exact line before it is sent. Claude Code also makes it the default for new sessions.'));
+  const grp = (title, list, kind, now) => {
+    box.append(el('div', 'mdl-t', title));
+    const r = el('div', 'mdl-row'); r.style.gridTemplateColumns = 'repeat(' + list.length + ', 1fr)';
+    list.forEach(([v, t]) => { const b = btn(t, 'mdl-b' + (now === v ? ' on' : ''), () => { closeSheet(); prepare({ kind, value: v }); }); b.dataset.value = v; r.append(b); });
+    box.append(r);
+  };
+  grp('Model', MODELS, 'model', cur && cur.model); grp('Effort', EFFORTS, 'effort', cur && cur.effort);
+  const row = el('div', 'btns'); row.append(btn('Cancel', '', closeSheet)); box.append(row);
+  openSheet(box);
+}
+$('dmodel').addEventListener('click', openModelSheet);
+
 function paintDetailChrome() {
   if (!S.cur) return;
   const a = byKey(S.cur.host + '|' + S.cur.pane) || S.agent;
@@ -1305,6 +1351,7 @@ function paintDetailChrome() {
   } else {
     $('dstate').textContent = 'GONE'; $('dstate').className = 'state';
   }
+  paintModelChip(a);
   $('dpos').textContent = i >= 0 ? (i + 1) + '/' + l.length : '–/' + l.length;
   $('dprev').disabled = !(l.length && (i > 0 || (i < 0 && S.idx > 0)));
   $('dnext').disabled = !(l.length && (i >= 0 ? i < l.length - 1 : S.idx < l.length));
@@ -1726,28 +1773,80 @@ async function prepareUpload(file) {
   }
   return { bytes: new Uint8Array(await file.arrayBuffer()), ext: (file.name.split('.').pop() || '').toLowerCase() };
 }
-$('attachbtn').addEventListener('click', () => { if (S.cur) $('filepick').click(); });
-$('filepick').addEventListener('change', async () => {
-  const f = $('filepick').files && $('filepick').files[0];
-  $('filepick').value = '';
-  if (!f || !S.cur) return;
-  const to = S.cur;
-  $('attachbtn').disabled = true; $('attachbtn').classList.add('on');
-  notify('Uploading ' + f.name + '\u2026', false);
-  try {
-    const { bytes, ext } = await prepareUpload(f);
-    if (bytes.length > 8 * 1024 * 1024) throw new Error('That file is over 8 MB even after shrinking it.');
-    const r = await api('api/upload?host=' + encodeURIComponent(to.host) + '&ext=' + encodeURIComponent(ext),
-      { method: 'POST', headers: { 'Content-Type': 'application/octet-stream', 'X-Shepr': '1' }, body: bytes });
-    if (S.cur && S.cur.host === to.host && S.cur.pane === to.pane) {
-      const m = $('msg');
-      m.value = (m.value ? m.value.replace(/\s*$/, ' ') : '') + r.path + ' ';
-      autosize();
-      notify('Attached ' + Math.round(r.bytes / 1024) + ' KB. Add a note if you like, then Send.', false);
-    }
-  } catch (e) { notify(e.message, true); }
-  finally { $('attachbtn').disabled = false; $('attachbtn').classList.remove('on'); }
+// ---- attach: pick one or several photos or files, add a comment to each, and they go into the message box as paths. Nothing
+// reaches the agent until you press Send and confirm. Claude Code turns a path on its own line into an image and keeps the
+// lines after it, so each photo's comment stays next to it (checked on Claude Code 2.1.293).
+const ATT_MAX = 10;
+const ATT = { items: [], to: null, busy: false, urls: [] };
+$('filepick').multiple = true;
+$('attachbtn').addEventListener('click', () => { if (S.cur) { ATT.add = false; $('filepick').click(); } });
+$('filepick').addEventListener('change', () => {
+  const files = Array.from($('filepick').files || []); $('filepick').value = '';
+  if (!files.length || !S.cur) return;
+  if (!ATT.add || !ATT.to) { ATT.items = []; ATT.to = { host: S.cur.host, pane: S.cur.pane }; }
+  files.forEach((f) => { if (ATT.items.length < ATT_MAX) ATT.items.push({ file: f, comment: '', path: null, url: null }); });
+  if (files.length + (ATT.items.length - files.length) > ATT_MAX) notify('Up to ' + ATT_MAX + ' at a time.', true);
+  openAttachSheet();
 });
+function attName(f) { return (f.name || 'photo').replace(/^image\./, 'photo.'); }
+function attThumb(it) {
+  const box = el('span', 'at-th');
+  const isImg = /^image\//.test(it.file.type) || /\.(jpe?g|png|gif|webp)$/i.test(it.file.name || '');
+  if (isImg) {
+    try { it.url = it.url || URL.createObjectURL(it.file); ATT.urls.push(it.url); } catch (e) { it.url = null; }
+    if (it.url) { const im = el('img'); im.alt = ''; im.src = it.url; im.addEventListener('error', () => { im.remove(); box.textContent = 'IMG'; }); box.append(im); return box; }
+  }
+  box.textContent = (/\.pdf$/i.test(it.file.name || '') ? 'PDF' : 'FILE');
+  return box;
+}
+function openAttachSheet() {
+  const box = el('div', 'attsheet'), n = ATT.items.length;
+  box.append(el('h3', null, n === 1 ? 'Attach 1 photo' : 'Attach ' + n + ' photos'), el('div', 'sub', 'Add a comment to each if you like. They go into the message box; nothing is sent until you press Send.'));
+  const list = el('div', 'at-list');
+  ATT.items.forEach((it, i) => {
+    const row = el('div', 'at-row'), ci = el('input', 'at-c'), rm = btn('×', 'at-x', () => { ATT.items.splice(i, 1); if (!ATT.items.length) { closeSheet(); return; } openAttachSheet(); });
+    ci.type = 'text'; ci.maxLength = 300; ci.placeholder = 'Comment on this photo'; ci.value = it.comment; ci.autocomplete = 'off'; ci.enterKeyHint = 'done';
+    ci.addEventListener('input', () => { it.comment = ci.value; });
+    rm.setAttribute('aria-label', 'Remove ' + attName(it.file)); rm.disabled = ATT.busy;
+    const mid = el('span', 'at-mid'); mid.append(el('span', 'at-n', (n > 1 ? (i + 1) + '. ' : '') + attName(it.file) + (it.path ? '  ✓' : '')), ci);
+    row.append(attThumb(it), mid, rm); list.append(row);
+  });
+  const more = btn('+ Add more', 'at-more', () => { ATT.add = true; $('filepick').click(); }); more.disabled = ATT.busy || n >= ATT_MAX;
+  const status = el('div', 'at-status'); status.id = 'at-status';
+  const go = btn(n === 1 ? 'Attach' : 'Attach ' + n, 'go', async () => { await attachAll(go, status); }); go.id = 'at-go'; go.disabled = ATT.busy;
+  const row = el('div', 'btns'); row.append(btn('Cancel', '', () => { ATT.items = []; closeSheet(); }), go);
+  box.append(list, more, status, row);
+  openSheet(box);
+}
+// Shrink and upload each file in turn, then write the paths and comments into that session's message box.
+async function attachAll(go, status) {
+  if (ATT.busy || !ATT.items.length || !ATT.to) return;
+  const to = ATT.to; ATT.busy = true; go.disabled = true; $('attachbtn').classList.add('on');
+  try {
+    for (let i = 0; i < ATT.items.length; i++) {
+      const it = ATT.items[i]; if (it.path) continue;
+      status.textContent = 'Uploading ' + (i + 1) + ' of ' + ATT.items.length + '…';
+      const { bytes, ext } = await prepareUpload(it.file);
+      if (bytes.length > 8 * 1024 * 1024) throw new Error(attName(it.file) + ' is over 8 MB even after shrinking it.');
+      const r = await api('api/upload?host=' + encodeURIComponent(to.host) + '&ext=' + encodeURIComponent(ext),
+        { method: 'POST', headers: { 'Content-Type': 'application/octet-stream', 'X-Shepr': '1' }, body: bytes });
+      it.path = r.path;
+    }
+    const many = ATT.items.length > 1, lines = [];
+    ATT.items.forEach((it, i) => { lines.push(it.path); const c = it.comment.replace(/\s+/g, ' ').trim(); if (c) lines.push((many ? 'Photo ' + (i + 1) + ': ' : '') + c); });
+    const block = lines.join('\n'), key = to.host + '|' + to.pane, count = ATT.items.length;
+    if (S.cur && S.cur.host === to.host && S.cur.pane === to.pane) {
+      const m = $('msg'); m.value = (m.value.trim() ? m.value.replace(/\s*$/, '\n') : '') + block + '\n'; autosize(); drafts.put(key, m.value);
+      notify('Attached ' + count + (count === 1 ? ' file' : ' files') + '. Add a note if you like, then Send.', false);
+    } else {   // you moved to another session while it uploaded: the draft of the one it was for gets it
+      const d = drafts.get(key); drafts.put(key, (d.trim() ? d.replace(/\s*$/, '\n') : '') + block + '\n');
+      notify('Attached ' + count + ' to the message waiting in ' + to.pane + '.', false);
+    }
+    ATT.items = []; ATT.urls.forEach((u) => { try { URL.revokeObjectURL(u); } catch (e) { /* ignore */ } }); ATT.urls = [];
+    closeSheet();
+  } catch (e) { status.textContent = e.message; status.classList.add('err'); go.disabled = false; notify(e.message, true); }
+  finally { ATT.busy = false; $('attachbtn').classList.remove('on'); }
+}
 
 function stageKey(k) {
   if (S.keybuf.length >= 8) return;
@@ -2048,7 +2147,7 @@ const sver = $('sver'); if (sver) sver.textContent = BUILD;
 let splashGone = false;
 function hideSplash(force) {
   if (splashGone) return;
-  const min = force ? 0 : quick ? 650 : 3500;
+  const min = force ? 0 : quick ? 650 : 5000;
   const wait = Math.max(0, min - (performance.now() - t0));
   splashGone = true;
   setTimeout(() => { splash.classList.add('out'); setTimeout(() => splash.remove(), 600); }, wait);
@@ -2078,4 +2177,4 @@ async function boot() {
   hideSplash(false);
 }
 boot();
-window.shepr = { S, ping, standalone, signHeaders, renderBlocks, appIsStale, BUILD, liveCut, syncHistory, prepareUpload, loadLedger, fmtDur, paceLive, budgetVerdict, drafts };
+window.shepr = { S, ping, standalone, signHeaders, renderBlocks, appIsStale, BUILD, liveCut, syncHistory, prepareUpload, loadLedger, fmtDur, paceLive, budgetVerdict, drafts, currentModel };

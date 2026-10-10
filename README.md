@@ -55,8 +55,8 @@ On the iPhone, in **Safari**: open `https://<this-host>.<your-tailnet>.ts.net:87
 | Tab | What |
 |---|---|
 | **Queue** | Everything, in the order that matters: **Needs you** (longest blocked first), **Finished**, **Working**, then **Sleeping** last (with a **Wake…** button). Sessions are named after your herdr workspace ("Shepr"), falling back to the project directory. Badge shows what needs you. | It refreshes itself every 10 s while the app is open and the moment you come back to it; pull down from the top of any list to refresh on demand.
-| **Radar** | Every session on every host as a radar (below). |
-| **Go** | Search every session by project, session title or host. Waiting first, then recent. |
+| **Radar** | Every session on every host as a radar, with the counts (waiting, finished, working, idle) and the longest wait above it (below). |
+| **Subs** | Your Claude, Codex, Kimi and Grok subscriptions on one animated page: how much of each plan is used, and whether you are banked, on pace or behind (below). |
 | **Hosts** | Hosts herdr can reach (turn saved ones on or off) and a tailnet scan for more. |
 | **Keys** | This phone's key, the phones the host trusts (revoke), pair another, **Top spacing**, and the app build (`Shepr v8`) so you can tell which version a phone is running. |
 
@@ -64,6 +64,8 @@ Every session is called by its **project** (the directory it runs in), with herd
 worked on, underneath. Two sessions in one project get their pane id so you can tell them apart.
 
 ### Moving around
+
+There is no Go tab: **hold any tab**, or tap a session's title, to search every session by project, title or host.
 
 <p align="center"><img src="docs/img/gestures.svg" alt="Tap, double-tap and hold" width="100%"></p>
 
@@ -115,11 +117,11 @@ An optional **First message** gives the new project its opening task: it is appe
 
 ### Photos and files
 
-The camera button next to the message box attaches a photo, a PDF or a plain text file (`txt md log json csv`) from your phone.
+The camera button next to the message box attaches photos, a PDF or plain text files (`txt md log json csv`) from your phone: pick up to ten at once, give each its own comment, add more, or remove one before it uploads.
 A photo is shrunk to 2000 px on the phone first (a PNG screenshot under 4 MB is sent as is, so text stays sharp). It is uploaded
 signed, to this host only, checked by its first bytes rather than its name or the type the phone claims (programs and scripts
 are refused), stored `0600` under `~/.local/state/shepr/uploads/<date>/` with a random name, and **deleted after a week**
-(the folder is also kept under 300 MB). The saved path is then placed in the message box for you to add a note and Send, so
+(the folder is also kept under 300 MB). The saved paths are then placed in the message box (each on its own line with its comment under it) for you to add a note and Send, so
 uploading sends nothing to anyone and the confirm sheet shows the exact text. Claude Code reads a path like that as an
 image attachment. Sessions on another host are refused, because the file would be on the wrong machine. Up to 8 MB per file.
 
@@ -148,14 +150,21 @@ The **Radar** tab shows every session as a radar. The centre is "needs you"; the
 idle. Each host has its own sector. Waiting dots pulse, swell the longer they wait, and carry the project name. Tap a dot to open
 that session. With the iPhone's Reduce Motion on, the sweep and the pulses stand still.
 
-Under the radar, one row per subscription (Claude, Codex, Kimi, Grok) answers "how much have I burned, and am I on pace?". Each
-row has the plan used so far, a burn-down graph (the dashed diagonal is an even spend; above it is over, and the dotted line is
+
+### Subscriptions
+
+The **Subs** tab has one card per subscription (Claude, Codex, Kimi, Grok) and answers "how much have I burned, and am I on pace?". Each
+card has the plan used so far, a burn-down graph (the dashed diagonal is an even spend; above it is over, and the dotted line is
 where your current rate lands at the reset) and a verdict: **BANKED 32%** when you have used less than the clock has,
-**BEHIND** when you are more than 5% past an even spend, **ON PACE**, or **SPENT**. Tap a row for the countdown (how long the
-bank is, or when to come back if you stop now) and the other windows, such as the 5-hour session. The numbers come from
+**BEHIND** when you are more than 5% past an even spend, **ON PACE**, or **SPENT**. Every window of the plan (the week, the 5-hour session, Fable weekly) is listed as a bar with a marker for the clock, and the
+countdown (how long the bank is, or when to come back if you stop now) ticks live. The page animates in once when you open it: the cards slide in, each curve draws itself, the bars fill and the numbers climb (Reduce Motion skips that). The numbers come from
 [Burn Bar](https://github.com/nixfred/burnbar), which measures each plan on the host; Shepr only reads its file
 (`SHEPR_BURN` overrides the path), so without Burn Bar the rows say so instead of guessing. Grok only reports its quota when it
 starts, so its figures carry a `~`.
+
+### Model and effort
+
+In a Claude session that is waiting for its next prompt, the **Model** chip next to the text-size buttons (it shows what the session is running, e.g. `Opus·high`) opens a sheet: Fable, Opus, Sonnet or Haiku, and low, medium, high, xhigh or max. It sends `/model <name>` or `/effort <level>` after the usual confirm sheet. Claude Code also saves the choice as its default for new sessions on that host, and the sheet says so. Not offered for Codex, or while the agent is working or waiting on a question.
 
 ### Wake a project that is asleep
 

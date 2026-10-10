@@ -302,4 +302,30 @@ burn({"claude": {"limits": [row("Weekly", 0.5)]}}); open(srv.BURN_FILE, "a").wri
 check("budget: an oversized file is refused", srv.budget_view()["available"] is False)
 
 
+# ---- model and effort: /model <name> and /effort <level>, only to a Claude session waiting for its next prompt
+srv.need_host = lambda h: {"id": "gus", "machine": None, "kind": "local", "enabled": True}
+def agent_is(kind, status):
+    srv.get_agent = lambda host, pane: {"agent": kind, "agent_status": status, "state_change_seq": 9, "agent_session": {"value": "s9"}}
+def refused(body):
+    try:
+        srv.build_plan(dict(body, host="gus", pane="w1:p1")); return None
+    except srv.HerdrError as e:
+        return e.code
+agent_is("claude", "idle")
+p = srv.build_plan({"kind": "model", "value": "opus", "host": "gus", "pane": "w1:p1"})
+check("model: an idle Claude gets exactly '/model opus' as a prompt, and the sheet says it is saved as the default",
+      srv.PLANS[p["nonce"]]["steps"] == [{"op": "prompt", "text": "/model opus"}] and any("default for new sessions" in l["v"] for l in p["lines"]))
+p = srv.build_plan({"kind": "effort", "value": "xhigh", "host": "gus", "pane": "w1:p1"})
+check("effort: '/effort xhigh'", srv.PLANS[p["nonce"]]["steps"] == [{"op": "prompt", "text": "/effort xhigh"}])
+agent_is("claude", "done")
+check("model: a finished Claude is allowed too", refused({"kind": "model", "value": "haiku"}) is None)
+check("model: values outside the offered lists are refused, including ones that would smuggle in more text",
+      all(refused({"kind": k, "value": v}) == "bad_value" for k, v in [("model", "opus\n/exit"), ("model", "gpt-5"), ("effort", "extreme"), ("effort", None), ("model", ["opus"]), ("effort", "high; rm -rf")]))
+agent_is("claude", "working")
+check("model: not while the agent is working", refused({"kind": "model", "value": "opus"}) == "not_idle")
+agent_is("claude", "blocked")
+check("model: not while it is waiting on a question (that dialog would eat the text)", refused({"kind": "effort", "value": "low"}) == "not_idle")
+agent_is("codex", "idle")
+check("model: only Claude Code sessions", refused({"kind": "model", "value": "opus"}) == "not_claude")
+
 sys.exit(0 if ok else 1)
