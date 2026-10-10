@@ -717,3 +717,34 @@ button{font:inherit;color:inherit}
 .chip u{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--hc,var(--dim));text-decoration:none;box-shadow:0 0 8px var(--hc,var(--dim))}
 .chip.all u{display:none}
 .chip.on u{box-shadow:0 0 10px var(--hc,var(--accent))}
+
+/* Queue rows say when a session is not Claude */
+.atag{margin-left:7px;padding:0 6px 1px;border:1px solid #3a4b5e;border-radius:6px;color:var(--dim);font:700 10px/1.3 ui-monospace,Menlo,monospace;letter-spacing:.8px;text-transform:uppercase;vertical-align:2px}
+/* the age of what you are reading */
+#dtime.live{color:var(--ok)}
+#dtime.stale{color:var(--warn);font-weight:700}
+.hrow .sub.bad{color:#ff9db0}
+/* Subs: which one to reach for */
+.sg{--tone:var(--ok);position:relative;padding:8px 12px 9px 13px;background:var(--card);border:1px solid color-mix(in srgb,var(--tone) 45%,var(--line));border-left:4px solid var(--tone);
+  clip-path:polygon(10px 0,100% 0,100% calc(100% - 10px),calc(100% - 10px) 100%,0 100%,0 10px)}
+.sg[data-tone=warn]{--tone:var(--warn)}.sg[data-tone=hot]{--tone:var(--hot)}
+.sg-t{font:800 16px ui-monospace,Menlo,monospace;letter-spacing:1.6px;color:var(--tone);text-shadow:0 0 14px color-mix(in srgb,var(--tone) 50%,transparent)}
+.sg[data-tone=warn] .sg-t{animation:scpulse 1.4s ease-in-out infinite}
+.sg-w{font-size:12.5px;color:var(--txt);margin-top:2px}
+.sg-r{font-size:11.5px;color:var(--dim);margin-top:3px}
+.subs.enter .sg{animation:scin .6s cubic-bezier(.2,.9,.3,1) backwards}
+.sc .bd-svg{overflow:visible}
+.sc-l.wrap{white-space:normal}
+
+/* Subs fits one screen: the advice line and four cards (Law 17) */
+.subs{gap:7px}
+.sg{padding:7px 12px 8px 13px}
+.sg-w{font-size:12px}
+.sc{padding:6px 11px 6px 12px}
+.sc .bd-svg{height:38px}
+.sc-m{margin-top:0}
+.sc-l{margin:1px 0 2px}
+.sc-r{margin-top:3px}
+
+/* the reason a machine is down is the whole point of showing it: wrap it, never cut it with an ellipsis */
+.hrow .sub.bad{white-space:normal;overflow:visible;text-overflow:clip;line-height:1.3}

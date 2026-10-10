@@ -376,4 +376,13 @@ check("tail: the queued hint lines and the (ctrl+o to expand) fragment are remov
       queued and "Press up to edit" not in text and "send now" not in text and "ctrl+o" not in text and "QUEUED-SECOND" in text)
 check("tail: ordinary text that merely mentions the shortcut is left alone", srv.clean_tail("press ctrl+enter to send now, he said") == ("press ctrl+enter to send now, he said", False))
 
+# ---- hosts: a down machine reports when it was last answering
+srv.machine_profiles = lambda: [{"label": "vic", "id": "p1", "enabled": True, "target": "x"}]
+srv.hub_pubkey = lambda: None
+with srv.LOCK:
+    srv.SNAP["hosts"] = [{"id": "gus", "status": "ok", "counts": {}}, {"id": "vic", "status": "down", "error": "timeout: ssh took longer than 9s", "last_ok": 1791600000.0, "counts": {}}]
+hv = srv.hosts_view()
+vic = next(h for h in hv["saved"] if h["id"] == "vic")
+check("hosts: a down machine reports its error and when it last answered, for the Hosts page", vic["status"] == "down" and vic["error"].startswith("timeout") and vic["last_ok"] == 1791600000.0)
+
 sys.exit(0 if ok else 1)

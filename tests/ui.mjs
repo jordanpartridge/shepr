@@ -944,6 +944,56 @@ const browser = await chromium.launch({ executablePath: '/usr/bin/chromium', arg
     await page.fill('#msg', ''); await page.click('#dback'); await page.waitForTimeout(300);
   }
 
+  // ---- looking around: guidance on Subs, a down host says why, a Codex tag, the age of what you read, and the tail stays at the bottom
+  {
+    await tap(page, '.tab[data-view=subs]'); await page.waitForSelector('.sg', { timeout: 10000 }); await page.waitForTimeout(1500);
+    const sg = await page.evaluate(() => ({ t: document.querySelector('.sg-t').textContent, w: document.querySelector('.sg-w').textContent, hidden: document.querySelector('.sg').hidden, first: document.getElementById('budget').firstElementChild.className }));
+    console.log('   subs guidance:', JSON.stringify(sg));
+    check('subs: a banner at the top says which subscription to reach for, and why (Codex has the most room in the fixture)', sg.first === 'sg' && !sg.hidden && sg.t === 'USE CODEX NEXT' && /^\d+% of its week banked . .* ahead . resets in/.test(sg.w));
+    check('subs: the banner is two lines (advice and why): who is resting is already on each card, so it is not said twice', (await page.$('.sg-r')) === null && (await page.$eval('.sg', (n) => n.getBoundingClientRect().height)) < 72);
+    const G = await page.evaluate(() => { const now = 1e12, D = 86400000, W = 7 * D, ag = (id, name, used, el, live = true, more = []) => ({ id, name, live, rows: [{ label: 'Weekly (7-day)', used, resets_ms: now + (1 - el) * W, window_ms: W, projected: 0, series: [] }, ...more] }), g = window.shepr.budgetGuidance;
+      const five = (u) => ({ label: 'Session (5-hour)', used: u, resets_ms: now + 3600000, window_ms: 5 * 3600000, projected: 0, series: [] });
+      return { a: g([ag('claude', 'Claude', 0.9, 0.5), ag('codex', 'Codex', 0.1, 0.5)], now), b: g([ag('codex', 'Codex', 0.1, 0.5)], now), c: g([ag('claude', 'Claude', 0.9, 0.5), ag('kimi', 'Kimi', 0.8, 0.5)], now),
+        d: g([ag('codex', 'Codex', 0.1, 0.5, true, [five(0.97)]), ag('kimi', 'Kimi', 0.3, 0.5)], now), e: g([ag('grok', 'Grok', 0.4, 0.55, false), ag('kimi', 'Kimi', 0.4, 0.55)], now),
+        f: g([ag('codex', 'Codex', 0.5, 0.95), ag('kimi', 'Kimi', 0.2, 0.5)], now), h: g([ag('a', 'A', 0.1, 0.5), ag('b', 'B', 0.2, 0.5)], now) }; });
+    check('guidance: of two, the one that is ahead is picked', G.a && G.a.kind === 'next' && G.a.id === 'codex');
+    check('guidance: one subscription means nothing to choose between, so no advice', G.b === null);
+    check('guidance: when everything is behind it says nothing has room, and who is resting', G.c && G.c.kind === 'none' && G.c.rest.length === 2);
+    check('guidance: a subscription with a full 5-hour window is never suggested, even with its week wide open', G.d && G.d.id === 'kimi' && G.d.rest.some((x) => x.name === 'Codex'));
+    check('guidance: a snapshot (Grok) needs a bigger margin than a live reading: 5% banked is not enough', G.e === null || G.e.id !== 'grok');
+    check('guidance: a reset within a day with budget unspent says use it now, or lose it', G.f && G.f.kind === 'now' && G.f.id === 'codex');
+    check('guidance: the one with the most plan left against the clock left wins', G.h && G.h.id === 'a');
+    await tap(page, '.tab[data-view=waiting]'); await page.waitForTimeout(300);
+    const tags = await page.evaluate(() => [...document.querySelectorAll('#main .item')].map((r) => { const a = window.shepr.S.q.agents.find((x) => x.host + '|' + x.pane === r.dataset.key); return [a.agent, (r.querySelector('.atag') || {}).textContent || '']; }));
+    check('rows: a session that is not Claude carries its agent (codex) as a tag, and Claude rows carry none', tags.some((x) => x[0] === 'codex' && x[1] === 'codex') && tags.filter((x) => x[0] === 'claude').every((x) => x[1] === ''));
+    const hr = await page.evaluate(() => { const n = (o) => window.shepr.hostRow(Object.assign({ id: 'vic', kind: 'remote', enabled: true, status: 'down', counts: {} }, o)).querySelector('.sub').textContent;
+      return { a: n({ error: 'timeout: ssh took longer than 9s', last_ok: Date.now() / 1000 - 720 }), b: n({ error: '', last_ok: null }) }; });
+    check('hosts: a down machine says why and when it was last seen', /timeout: ssh took longer than 9s/.test(hr.a) && /last seen 12 minutes ago/.test(hr.a));
+    check('hosts: a machine never reached since Shepr started says that instead of a time', /not answering/.test(hr.b) && /not seen since Shepr started/.test(hr.b));
+
+    const wrapOk = await page.evaluate(() => { const m = document.getElementById('main'), box = document.createElement('div'); m.append(box);
+      const r = window.shepr.hostRow({ id: 'vic', kind: 'remote', enabled: true, status: 'down', counts: {}, error: 'timeout: ssh took longer than 9s', last_ok: Date.now() / 1000 - 720 }); box.append(r);
+      const s = r.querySelector('.sub'), out = { clipped: s.scrollWidth > s.clientWidth + 1, tall: s.getBoundingClientRect().height > parseFloat(getComputedStyle(s).lineHeight) * 1.5, inside: r.getBoundingClientRect().right <= window.innerWidth + 1 }; box.remove(); return out; });
+    check('hosts: the reason a machine is down is shown whole, wrapped onto a second line, not cut off with an ellipsis', !wrapOk.clipped && wrapOk.tall && wrapOk.inside);
+    const nd = await page.evaluate(() => { const c = (help) => window.shepr.subCard({ id: 'codex', name: 'Codex', live: true, rows: [], status: 'Codex limits unavailable', help }, 0, false).textContent;
+      return { code: c('account/read'), advice: c('Run `codex login` to authenticate.') }; });
+    check('subs: a card with no data shows why and a help sentence, but never a bare code like "account/read"', /Codex limits unavailable/.test(nd.code) && !/account\/read/.test(nd.code) && /Run `codex login` to authenticate\./.test(nd.advice));
+    const idl = await page.evaluate(() => { const a = window.shepr.S.q.agents.find((x) => x.status === 'idle' && x.agent === 'claude'); return a.host + '|' + a.pane; });
+    await tap(page, `.item[data-key="${idl}"]`); await page.waitForSelector('#detail:not([hidden])'); await page.waitForSelector('#tail .tl', { timeout: 8000 }); await page.waitForTimeout(1800);
+    const age = await page.evaluate(() => { const n = document.getElementById('dtime'); return { t: n.textContent, c: n.className }; });
+    check('reading: the toolbar says "live" while the refresh keeps up, instead of a clipped clock', age.t === 'live' && /live/.test(age.c));
+    const old = await page.evaluate(() => { window.shepr.S.tailAt = Date.now() - 45000; window.shepr.paintTailAge(); const n = document.getElementById('dtime'); return { t: n.textContent, c: n.className }; });
+    check('reading: once the refresh has stopped it says how old the screen is, in amber, so a stale screen does not look current', old.t === '45s ago' && /stale/.test(old.c));
+    const gap = await page.evaluate(() => { const t = document.getElementById('tail'); return Math.round(t.scrollHeight - t.scrollTop - t.clientHeight); });
+    check('reading: a session opens scrolled to the very bottom, so its last line is not hidden behind the message bar', gap <= 3);
+    const rs = await page.evaluate(async () => { const t = document.getElementById('tail'), live = document.getElementById('live'), wait = () => new Promise((r) => setTimeout(r, 160)), grow = () => { const d = document.createElement('div'); d.style.height = '90px'; d.className = 'growprobe'; live.append(d); };
+      grow(); await wait(); const stuck = Math.round(t.scrollHeight - t.scrollTop - t.clientHeight);
+      t.scrollTop = 0; await wait(); grow(); await wait(); const left = t.scrollTop;
+      document.querySelectorAll('.growprobe').forEach((n) => n.remove()); t.scrollTop = t.scrollHeight; await wait(); return { stuck, left }; });
+    check('reading: content that grows under you keeps you at the bottom, but never pulls you down while you have scrolled up to read', rs.stuck <= 3 && rs.left === 0);
+    await page.click('#dback'); await page.waitForTimeout(300);
+  }
+
   // ---- model and effort: a chip in the session header opens a sheet of buttons; the confirm sheet shows the exact line
   {
     const idle = await page.evaluate(() => { const a = window.shepr.S.q.agents.find((x) => x.agent === 'claude' && x.status === 'idle'); return a ? a.host + '|' + a.pane : null; });

@@ -164,6 +164,12 @@ countdown (how long the bank is, or when to come back if you stop now) ticks liv
 (`SHEPR_BURN` overrides the path), so without Burn Bar the rows say so instead of guessing. Grok only reports its quota when it
 starts, so its figures carry a `~`.
 
+The page opens with one line of advice (Burn Bar's own rules): **USE CODEX NEXT**, and why (`32% of its week is banked, about 3d ahead, resets in 4d`), or **USE IT NOW** when a reset is under a day away with budget unspent, or **NOTHING HAS ROOM**. Only a subscription that is ahead of an even spend is ever suggested, one whose 5-hour window is nearly full never is, a snapshot such as Grok needs a bigger margin, and with fewer than two subscriptions there is nothing to choose between, so the line is not shown. Under it, which ones are resting and for how long.
+
+### A live screen
+
+The toolbar says `live` while the screen is being kept up to date and turns amber (`45s ago`) once it has stopped, so a stale screen cannot pass for a current one. The text stays pinned to the bottom while things reflow under it and never pulls you down while you are scrolled up reading. A session that is not Claude Code carries a small tag (`codex`).
+
 ### Model and effort
 
 In a Claude session that is waiting for its next prompt, the **Model** chip next to the text-size buttons (it shows what the session is running, e.g. `Opus·high`) opens a sheet: Fable, Opus, Sonnet or Haiku, and low, medium, high, xhigh or max. It sends `/model <name>` or `/effort <level>` after the usual confirm sheet. Claude Code also saves the choice as its default for new sessions on that host, and the sheet says so. Not offered for Codex, or while the agent is working or waiting on a question.

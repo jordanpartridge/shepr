@@ -1318,7 +1318,7 @@ def hosts_view():
     for m in profiles:
         st = status.get(m.get("label")) or {}
         saved.append({"id": m.get("label"), "profile": m.get("id"), "kind": "remote", "enabled": bool(m.get("enabled")),
-                      "target": m.get("target"), "status": st.get("status"), "error": st.get("error"),
+                      "target": m.get("target"), "status": st.get("status"), "error": st.get("error"), "last_ok": st.get("last_ok"),
                       "counts": st.get("counts", {})})
     pk = hub_pubkey()
     return {"saved": saved, "scan": scan, "hub": LOCAL, "pubkey": pk,
