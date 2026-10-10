@@ -66,4 +66,5 @@ await p.evaluate(() => { const t = document.getElementById('tail'); t.scrollTop 
 await p.screenshot({ path: '/tmp/claude-1000/shots/f4-expanded.png' });
 const ok = has(/fable|xhigh/i) && has(/banked/i) && has(/^ctx/i) && compact.length >= 4 && compact.length <= 7 && all.length >= 12 && stats.rules === 1 && stats.noHorizontalScroll;
 console.log(ok ? `PASS compact strip (${compact.length} chips: model, context, banked...) expands to all ${all.length}; empty prompt box is one rule; no sideways scroll` : 'FAIL');
-await b.close(); 
+await b.close();
+process.exit(ok ? 0 : 1);

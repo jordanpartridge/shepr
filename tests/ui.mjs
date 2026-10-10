@@ -95,10 +95,14 @@ const browser = await chromium.launch({ executablePath: '/usr/bin/chromium', arg
     out.replay = (await fetch('api/queue', { headers: h })).status;
     const h2 = await S.signHeaders('GET', 'api/queue', '');
     out.otherPath = (await fetch('api/pane?host=gus&pane=w1:p1', { headers: h2 })).status;   // signed for another path
-    const h3 = await S.signHeaders('POST', 'api/hosts/scan', '{}');
-    out.methodSwap = (await fetch('api/hosts', { headers: h3 })).status;
+    // Same path, same (empty) body, ONLY the method differs: a valid POST signature replayed as a GET.
+    const h3 = await S.signHeaders('POST', 'api/queue', '');
+    out.methodSwap = (await fetch('api/queue', { headers: h3 })).status;
     out.noSig = (await fetch('api/queue')).status;
-    const h4 = { ...(await S.signHeaders('GET', 'api/queue', '')), 'X-Shepr-Ts': String(Date.now() - 10 * 60 * 1000) };
+    // A CORRECTLY signed request that is ten minutes old (the clock offset is part of what gets signed).
+    const st = S.S, skew = st.skew; st.skew = skew - 10 * 60 * 1000;
+    const h4 = await S.signHeaders('GET', 'api/queue', '');
+    st.skew = skew;
     out.stale = (await fetch('api/queue', { headers: h4 })).status;
     return out;
   });

@@ -8,7 +8,7 @@
      3. No timer, retry or "auto" anything ever sends. A failed send is reported, never repeated.
      4. The private key never leaves the phone: it is generated non-extractable and only signs. */
 'use strict';
-const BUILD = 'v14';   // keep equal to sw.js VERSION: shown in Keys and logged by the host, so you can see which app a phone is running
+const BUILD = 'v15';   // keep equal to sw.js VERSION: shown in Keys and logged by the host, so you can see which app a phone is running
 
 // ---------------------------------------------------------------------------
 // 1. Service worker. Without this, a dead tailnet shows Safari's error page and
@@ -100,10 +100,13 @@ function idb() {
 async function kv(mode, k, v) {
   const db = await idb();
   return new Promise((res, rej) => {
-    const st = db.transaction('kv', mode === 'get' ? 'readonly' : 'readwrite').objectStore('kv');
+    const tx = db.transaction('kv', mode === 'get' ? 'readonly' : 'readwrite');
+    const st = tx.objectStore('kv');
     const q = mode === 'get' ? st.get(k) : mode === 'set' ? st.put(v, k) : st.delete(k);
-    q.onsuccess = () => res(q.result);
-    q.onerror = () => rej(q.error);
+    // A write is only done when the transaction COMPLETES: a request can succeed and its transaction still abort.
+    tx.oncomplete = () => res(q.result);
+    tx.onerror = () => rej(tx.error || q.error);
+    tx.onabort = () => rej(tx.error || new Error('storage write was aborted'));
   });
 }
 const loadDevice = () => kv('get', 'device');
@@ -252,7 +255,14 @@ function gesture(node, h) {
 function appIsStale(serverBuild) {
   if (!serverBuild || serverBuild === BUILD) return;
   const busy = ($('msg') && $('msg').value.trim()) || S.sheetOpen || S.keybuf.length || !$('pair').hidden;
-  if (!busy && !S.cur) { location.reload(); return; }
+  // One automatic reload per advertised build. If the page still comes back old (a cached shell, a half-finished
+  // deploy), asking again would loop forever, so the second time it is the Update button.
+  let tried = null;
+  try { tried = sessionStorage.getItem('shepr.reloadedFor'); } catch (e) { /* storage may be blocked */ }
+  if (!busy && !S.cur && tried !== serverBuild) {
+    try { sessionStorage.setItem('shepr.reloadedFor', serverBuild); } catch (e) { /* ignore */ }
+    location.reload(); return;
+  }
   notify('A new version of Shepr (' + serverBuild + ') is ready.', false, ['Update', () => location.reload()], true);
 }
 let fetching = false;
@@ -261,7 +271,7 @@ function fetchQueue(fresh) {
   fetching = true;
   $('mini').classList.add('busy');
   return api('api/queue' + (fresh ? '?fresh=1' : '')).then((q) => {
-    S.q = q; setOnline(true); render(); appIsStale(q.build);
+    S.q = q; setOnline(!q.cached); render(); if (!q.cached) appIsStale(q.build);
   }).catch((e) => { if (!e.status) setOnline(false); })
     .finally(() => { fetching = false; setTimeout(() => $('mini').classList.remove('busy'), 400); });
 }
@@ -489,12 +499,18 @@ $('refresh').addEventListener('click', () => { fetchQueue(true); if (S.tab === '
 // ---------------------------------------------------------------------------
 // 8. Hosts and keys views
 // ---------------------------------------------------------------------------
+let hostsTimer = null, hostsBusy = false;
 function loadHosts() {
+  if (hostsBusy) return Promise.resolve();
+  hostsBusy = true;
+  clearTimeout(hostsTimer);
   return api('api/hosts').then((h) => {
     S.hosts = h;
     if (S.tab === 'hosts' || S.tab === 'keys') paintMain();
-    if (h.scan && h.scan.running) setTimeout(loadHosts, 1500);
-  }).catch(() => { /* the banner already says what is wrong */ });
+    // Keep watching a running scan, but only while you are looking at it, and only ever one timer.
+    if (h.scan && h.scan.running && (S.tab === 'hosts' || S.tab === 'keys')) hostsTimer = setTimeout(loadHosts, 1500);
+  }).catch(() => { /* the banner already says what is wrong */ })
+    .finally(() => { hostsBusy = false; });
 }
 
 function copyText(text, what) {
@@ -572,7 +588,7 @@ function paintHostsView(m) {
 }
 
 function startScan() {
-  post('api/hosts/scan', {}).then(() => { loadHosts(); setTimeout(loadHosts, 600); })
+  post('api/hosts/scan', {}).then(() => loadHosts())
     .catch((e) => notify(e.message, true));
 }
 
@@ -644,7 +660,8 @@ function forgetThisPhone() {
              el('div', 'sub', 'Deletes the key from this app. The host keeps trusting it until you revoke it there.'));
   const row = el('div', 'btns');
   row.append(btn('Cancel', '', closeSheet), btn('Forget', 'go appr', () => {
-    forgetDevice().finally(() => { S.dev = null; S.q = null; closeSheet(); showPair('This phone forgot its key. Pair again to continue.'); });
+    forgetDevice().then(() => { S.dev = null; S.q = null; closeSheet(); showPair('This phone forgot its key. Pair again to continue.'); })
+      .catch((e) => { closeSheet(); notify('Could not delete the key from this phone: ' + (e && e.message || 'storage error') + '. It is still paired.', true); });
   }));
   box.append(row); openSheet(box);
 }
@@ -776,6 +793,7 @@ function showPlan(plan) {
 
 function commit(plan, goBtn) {
   goBtn.disabled = true; goBtn.textContent = 'Working…';
+  const sentTo = S.cur ? S.cur.host + '|' + S.cur.pane : null;
   post('api/send/commit', { nonce: plan.nonce }).then((r) => {
     closeSheet();
     if (plan.kind === 'wake') {
@@ -790,9 +808,10 @@ function commit(plan, goBtn) {
       notify('Done.', false); loadHosts(); fetchQueue(true);
       return;
     }
-    S.keybuf = []; paintStage();
-    $('msg').value = ''; autosize();
-    if (plan.kind === 'text' && S.cur) noteSlashUse(S.cur.host, S.lastText);
+    S.selSig = null;   // the next tick-several question starts from what is on screen
+    // The answer can arrive after you moved to another session: only clear the draft of the one it was for.
+    if (S.cur && S.cur.host + '|' + S.cur.pane === sentTo) { S.keybuf = []; paintStage(); $('msg').value = ''; autosize(); }
+    if (plan.kind === 'text') noteSlashUse(plan.target.host, S.lastText);
     notify('Sent to ' + (plan.target.title || plan.target.pane), false);
     setTimeout(loadTail, 1400);
     fetchQueue(true);
@@ -1073,7 +1092,7 @@ function paintDock() {
 // Submit / Next, which shows exactly what will be ticked and pressed and waits for you to confirm.
 function paintMulti(opt, m) {
   const tog = m.options.filter((o) => o.checked !== null && !o.free && o.n <= 9);
-  const sig = JSON.stringify(m.options.map((o) => [o.n, o.label, o.checked]));
+  const sig = JSON.stringify([S.agent && S.agent.seq, m.options.map((o) => [o.n, o.label, o.checked])]);
   if (S.selSig !== sig) { S.selSig = sig; S.sel = new Set(tog.filter((o) => o.checked).map((o) => o.n)); }
   tog.forEach((o) => {
     const on = S.sel.has(o.n);

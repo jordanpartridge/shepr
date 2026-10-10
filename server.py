@@ -22,6 +22,8 @@ The rules this file exists to keep:
 import argparse
 import base64
 import concurrent.futures
+import contextlib
+import fcntl
 import functools
 import glob
 import hashlib
@@ -31,6 +33,7 @@ import json
 import os
 import re
 import secrets
+import shutil
 import socket
 import subprocess
 import sys
@@ -78,24 +81,59 @@ class HerdrError(Exception):
 # --------------------------------------------------------------------------------------------
 # talking to herdr
 # --------------------------------------------------------------------------------------------
+MAX_OUT = 4 << 20   # bytes kept from one herdr call; a runaway remote cannot grow this process without limit
+
+
+def bounded_run(cmd, timeout):
+    """subprocess.run with a byte cap on stdout and stderr: past MAX_OUT the child is killed."""
+    p = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    bufs, over = {"out": bytearray(), "err": bytearray()}, threading.Event()
+
+    def pump(name, f):
+        while True:
+            chunk = f.read(65536)
+            if not chunk:
+                return
+            room = MAX_OUT - len(bufs[name])
+            bufs[name] += chunk[:max(room, 0)]
+            if len(chunk) > room:
+                over.set()
+                p.kill()
+                return
+    ts = [threading.Thread(target=pump, args=(n, f), daemon=True) for n, f in (("out", p.stdout), ("err", p.stderr))]
+    for t in ts:
+        t.start()
+    try:
+        p.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        p.kill()
+        p.wait()
+        raise
+    for t in ts:
+        t.join(2)
+    if over.is_set():
+        raise HerdrError("too_big", f"herdr answered with more than {MAX_OUT >> 20} MB, so it was cut off")
+    dec = lambda b: bytes(b).decode("utf-8", "replace")
+    return p.returncode, dec(bufs["out"]), dec(bufs["err"])
+
+
 def run_herdr(machine, args, timeout=10, want_json=True):
     """Run one herdr command. machine=None is this host; otherwise a saved machine label.
     --machine goes in front of the subcommand, never combined with --session (herdr --skill)."""
     cmd = [HERDR] + (["--machine", machine] if machine else []) + list(args)
     try:
-        p = subprocess.run(cmd, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=timeout)
+        rc, out, err = bounded_run(cmd, timeout)
     except subprocess.TimeoutExpired:
         raise HerdrError("timeout", f"herdr took longer than {timeout}s")
     except FileNotFoundError:
         raise HerdrError("no_herdr", f"{HERDR} not found")
-    out = p.stdout or ""
-    if p.returncode != 0:
-        msg = (p.stderr or out).strip()
+    if rc != 0:
+        msg = (err or out).strip()
         try:
             e = json.loads(msg)["error"]
             raise HerdrError(e.get("code", "error"), e.get("message", msg))
         except (ValueError, KeyError, TypeError):
-            raise HerdrError("error", msg.splitlines()[-1] if msg else f"exit {p.returncode}")
+            raise HerdrError("error", msg.splitlines()[-1] if msg else f"exit {rc}")
     if not want_json:
         return out
     try:
@@ -212,11 +250,24 @@ def note_seen(host, agents, now):
 
 
 def poll_host(host):
+    try:
+        return _poll_host(host)
+    except Exception as e:   # a host that answers with the wrong shape is that host's problem, not the whole queue's
+        return host, None, {}, f"bad_response: {type(e).__name__}: {e}"
+
+
+def _poll_host(host):
     now = time.time()
     try:
         agents = run_herdr(host["machine"], ["agent", "list"], timeout=9)["result"]["agents"]
     except HerdrError as e:
         return host, None, {}, f"{e.code}: {e.message}"
+    except (KeyError, TypeError):
+        return host, None, {}, "bad_response: herdr's agent list is not in the expected shape"
+    if not isinstance(agents, list):
+        return host, None, {}, "bad_response: herdr's agent list is not a list"
+    agents = [a for a in agents if isinstance(a, dict) and isinstance(a.get("pane_id"), str)
+              and isinstance(a.get("agent_status"), str)]
     try:
         ws = {w["workspace_id"]: w.get("label") for w in
               run_herdr(host["machine"], ["workspace", "list"], timeout=9)["result"]["workspaces"]}
@@ -476,7 +527,8 @@ def build_plan(body):
         on = [f"{n}. {tick[n]['label']}" for n in flip if n in want]
         off = [f"{n}. {tick[n]['label']}" for n in flip if n not in want]
         lines = ([("Ticks", ", ".join(on))] if on else []) + ([("Unticks", ", ".join(off))] if off else []) + \
-                [("Leaves ticked", ", ".join(f"{n}. {tick[n]['label']}" for n in sorted(tick) if n in want and n not in flip) or "nothing else")] + \
+                [("Leaves ticked", ", ".join(f"{o['n']}. {o['label']}" + ("" if o["n"] in tick else " (cannot be changed here)")
+                                             for o in menu["options"] if o["checked"] and o["n"] not in flip) or "nothing else")] + \
                 ([("Then", f"{act['label']} (⏎)")] if advance else [("Then", "stays on the question")]) + \
                 [("By pressing", human_keys(keys))]
     else:
@@ -516,6 +568,15 @@ def run_step(host, pane, step):
     raise HerdrError("bad_step", step["op"])
 
 
+PANE_LOCKS = {}
+LAST_SENT = {}   # (host, pane) -> state_change_seq of the blocked dialog that was last answered from here
+
+
+def pane_lock(host_id, pane):
+    with LOCK:
+        return PANE_LOCKS.setdefault((host_id, pane), threading.Lock())
+
+
 def commit_plan(nonce):
     with LOCK:
         plan = PLANS.pop(str(nonce), None)  # one use, even if the commit then fails
@@ -526,11 +587,19 @@ def commit_plan(nonce):
     if plan["kind"] == "wake":
         return commit_wake(plan)
     host = need_host(plan["host"])
+    with pane_lock(plan["host"], plan["pane"]):   # verify and dispatch as one step per pane
+        return _commit_pane_plan(host, plan)
+
+
+def _commit_pane_plan(host, plan):
     a = get_agent(host, plan["pane"])
     snap = plan["snap"]
+    key = (plan["host"], plan["pane"])
     if (a["agent_status"], a.get("state_change_seq"), (a.get("agent_session") or {}).get("value")) != \
             (snap["status"], snap["seq"], snap["session"]):
         raise HerdrError("moved_on", "the agent changed state since you looked, so nothing was sent. Read it again.")
+    if snap["status"] == "blocked" and snap["seq"] is not None and LAST_SENT.get(key) == snap["seq"]:
+        raise HerdrError("moved_on", "that dialog was already answered a moment ago, so nothing was sent.")
     if plan["kind"] == "multi":
         menu = parse_menu(read_tail(host, plan["pane"], 80))
         now = menu and menu.get("multi") and [[o["n"], o["label"], o["checked"]] for o in menu["options"]] + [menu["cur_idx"], menu["action"]["idx"]]
@@ -543,7 +612,19 @@ def commit_plan(nonce):
         if not o or o["label"] != label or menu["current"] != cur:
             raise HerdrError("moved_on", "the menu on screen is not the one you chose from, so nothing was sent.")
     done = []
-    for step in plan["steps"]:
+    steps = plan["steps"]
+    for i, step in enumerate(steps):
+        if plan["kind"] == "multi" and i == len(steps) - 1 and i > 0:
+            # The ticks went in one keypress at a time: check the question is still the same one before the
+            # final move-and-Enter, so a question that changed meanwhile is never submitted.
+            a2 = get_agent(host, plan["pane"])
+            m2 = parse_menu(read_tail(host, plan["pane"], 80))
+            same = m2 and m2.get("multi") and m2["cur_idx"] == snap["multi"][-2] and \
+                [o["label"] for o in m2["options"]] == [x[1] for x in snap["multi"][:-2]]
+            if not same or (a2["agent_status"], (a2.get("agent_session") or {}).get("value")) != (snap["status"], snap["session"]):
+                audit(plan, False, "moved_on: question changed between the ticks and the submit")
+                raise HerdrError("moved_on", "the question changed while ticking, so Submit was not sent. "
+                                             f"Ticks already sent: {', '.join(done) or 'none'}. Read the screen before trying again.")
         try:
             run_step(host, plan["pane"], step)
             done.append(step["op"])
@@ -553,6 +634,11 @@ def commit_plan(nonce):
             audit(plan, False, f"{e.code}: {e.message}")
             raise HerdrError(e.code, f"{e.message}. Sent before the failure: {', '.join(done) or 'nothing'}. "
                                      "A failed write may still have landed: read the pane before trying again.")
+    if snap["status"] == "blocked":
+        LAST_SENT[key] = snap["seq"]
+        with LOCK:   # any other preview made against this same dialog is dead now
+            for k in [k for k, p in PLANS.items() if (p.get("host"), p.get("pane")) == key]:
+                del PLANS[k]
     audit(plan, True, "")
     return {"ok": True, "sent": done}
 
@@ -562,7 +648,9 @@ def audit(plan, ok, err):
         os.makedirs(STATE_DIR, mode=0o700, exist_ok=True)
         rec = {"t": int(time.time()), "host": plan.get("host"), "pane": plan.get("pane"), "kind": plan["kind"],
                "ok": ok, "err": err, "steps": [dict(s, text=s["text"][:200]) if "text" in s else s for s in plan.get("steps", [])]}
-        with open(state_path("sends.jsonl"), "a") as f:
+        fd = os.open(state_path("sends.jsonl"), os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "a") as f:
             f.write(json.dumps(rec) + "\n")
         print("shepr: send " + json.dumps(rec, ensure_ascii=False), file=sys.stderr, flush=True)
     except OSError:
@@ -663,6 +751,31 @@ def devices():
         return DEVICES
 
 
+@contextlib.contextmanager
+def state_lock():
+    """One lock for the device registry and the pairing record, shared by this server and the `shepr` CLI
+    (separate processes), so a revoke or a redeem is never lost to a stale in-memory copy."""
+    os.makedirs(STATE_DIR, mode=0o700, exist_ok=True)
+    with open(state_path(".lock"), "a") as f:
+        fcntl.flock(f, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(f, fcntl.LOCK_UN)
+
+
+def _mutate_devices_locked(fn):
+    _dev_mtime[0] = None          # force a reload from disk: never write back what another process already changed
+    r = fn(devices())
+    save_devices()
+    return r
+
+
+def mutate_devices(fn):
+    with LOCK, state_lock():
+        return _mutate_devices_locked(fn)
+
+
 def save_devices():
     os.makedirs(STATE_DIR, mode=0o700, exist_ok=True)
     tmp = state_path("devices.json.tmp")
@@ -711,12 +824,15 @@ def verify_request(headers, method, target, body):
         if nonce in NONCES:
             raise HerdrError("replay", "that request was already seen")
         NONCES[nonce] = now + 300
-        if now - (d.get("last_seen") or 0) > 60:
-            d["last_seen"] = int(now)
-            try:
-                save_devices()
-            except OSError:
-                pass
+    if now - (d.get("last_seen") or 0) > 60:
+        def touch(devs):
+            if dev not in devs:   # revoked while this request was being verified
+                raise HerdrError("unknown_device", "this device is not authorized here (revoked, or never paired)")
+            devs[dev]["last_seen"] = int(now)
+        try:
+            mutate_devices(touch)
+        except OSError:
+            pass
     return dev
 
 
@@ -755,14 +871,7 @@ def do_pair(body, ua):
         PAIR_FAILS[:] = [t for t in PAIR_FAILS if now - t < 60]
         if len(PAIR_FAILS) >= 5:
             raise HerdrError("slow_down", "too many wrong codes: wait a minute and run `shepr pair` again")
-    pend = read_pairing()
     code = norm_code(body.get("code", ""))
-    good = bool(pend) and not pend.get("used_by") and pend.get("expires", 0) > now and \
-        hmac.compare_digest(pend.get("hash", ""), hashlib.sha256(code.encode()).hexdigest())
-    if not good:
-        with LOCK:
-            PAIR_FAILS.append(now)
-        raise HerdrError("bad_code", "that code is wrong, used, or expired: run `shepr pair` for a fresh QR")
     jwk = body.get("jwk") or {}
     try:
         if jwk.get("kty") != "EC" or jwk.get("crv") != "P-256":
@@ -774,13 +883,19 @@ def do_pair(body, ua):
         raise HerdrError("bad_key", "that is not a P-256 public key")
     name = re.sub(r"[^\w .@'-]", "", str(body.get("name") or "iPhone"))[:40].strip() or "iPhone"
     did = hashlib.sha256(b"\x04" + x.to_bytes(32, "big") + y.to_bytes(32, "big")).hexdigest()[:16]
-    with LOCK:
-        devices()
-        DEVICES[did] = {"name": name, "x": b64u(x.to_bytes(32, "big")), "y": b64u(y.to_bytes(32, "big")),
-                        "added": int(now), "last_seen": int(now), "ua": (ua or "")[:160]}
-        save_devices()
-    pend["used_by"] = did
-    write_pairing(pend)
+    # Read, check, consume and register under ONE lock: two phones racing with the same code cannot both win.
+    with LOCK, state_lock():
+        pend = read_pairing()
+        good = bool(pend) and not pend.get("used_by") and pend.get("expires", 0) > now and \
+            hmac.compare_digest(pend.get("hash", ""), hashlib.sha256(code.encode()).hexdigest())
+        if not good:
+            PAIR_FAILS.append(now)
+            raise HerdrError("bad_code", "that code is wrong, used, or expired: run `shepr pair` for a fresh QR")
+        pend["used_by"] = did
+        write_pairing(pend)
+        _mutate_devices_locked(lambda devs: devs.__setitem__(did, {
+            "name": name, "x": b64u(x.to_bytes(32, "big")), "y": b64u(y.to_bytes(32, "big")),
+            "added": int(now), "last_seen": int(now), "ua": (ua or "")[:160]}))
     print(f"shepr: paired {name!r} {fingerprint(x, y)}", file=sys.stderr, flush=True)
     return {"device": did, "fp": fingerprint(x, y), "host": LOCAL, "t": now}
 
@@ -1081,9 +1196,7 @@ def plan_host(body):
 def commit_host(plan):
     step = plan["steps"][0]
     if step["op"] == "revoke":
-        with LOCK:
-            devices().pop(step["id"], None)
-            save_devices()
+        mutate_devices(lambda devs: devs.pop(step["id"], None))
         audit(plan, True, "")
         return {"ok": True, "sent": ["revoke"]}
     try:
@@ -1173,7 +1286,7 @@ def commit_wake(plan):
 # HTTP
 # --------------------------------------------------------------------------------------------
 STATIC_OK = re.compile(r"^/(?:|index\.html|app\.css|app\.js|sw\.js|manifest\.webmanifest|vendor/jsQR\.js|"
-                       r"icons/[A-Za-z0-9_.-]+\.(?:png|svg))$")
+                       r"icons/(?:launch/)?[A-Za-z0-9_.-]+\.(?:png|svg))$")
 CSP = ("default-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self'; "
        "base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
 PUBLIC_API = {"/api/hello", "/api/pair"}
@@ -1197,6 +1310,7 @@ def learn_tailnet():
 
 class Handler(SimpleHTTPRequestHandler):
     server_version = "shepr"
+    timeout = 20   # a client that stops sending is dropped instead of holding a thread forever
 
     def log_message(self, fmt, *args):
         if args and str(args[1]) not in ("200", "304"):
@@ -1365,12 +1479,17 @@ def cli_pair(a):
                    "created": int(time.time()), "used_by": None})
     url = f"{info['url']}/#shepr-pair={shown}"
     if a.png:
+        if not shutil.which("qrencode"):
+            sys.exit("shepr: --png needs qrencode (not installed)")
         subprocess.run(["qrencode", "-o", a.png, "-s", "10", "-m", "4", "-l", "M", url], check=True)
     if a.json:
         print(json.dumps({"url": url, "code": shown, "expires": int(time.time() + ttl), "png": a.png}), flush=True)
     else:
         print(f"\n  \033[1;36mSHEPR\033[0m  pair a phone with \033[1m{LOCAL}\033[0m\n")
-        subprocess.run(["qrencode", "-t", "ANSIUTF8", "-m", "2", "-l", "M", url], check=False)
+        if shutil.which("qrencode"):
+            subprocess.run(["qrencode", "-t", "ANSIUTF8", "-m", "2", "-l", "M", url], check=False)
+        else:
+            print("  (qrencode is not installed, so there is no QR here: install it for a scannable code)")
         print(f"\n  1. Open \033[1mShepr\033[0m on the iPhone and tap \033[1mScan\033[0m")
         print(f"  2. Point it at the code above")
         print(f"  or type the code by hand: \033[1;33m{shown}\033[0m")
@@ -1411,15 +1530,38 @@ def cli_devices(a):
 
 
 def cli_revoke(a):
-    devs = devices()
-    hit = [i for i, d in devs.items() if a.who in (i, d["name"]) or i.startswith(a.who)]
-    if len(hit) != 1:
-        sys.exit(f"shepr: {'no' if not hit else 'more than one'} device matches {a.who!r}; see: shepr devices")
-    name = devs[hit[0]]["name"]
-    del devs[hit[0]]
-    save_devices()
-    print(f"revoked {name} ({hit[0]}). That phone is signed out now.")
+    res = {}
+
+    def drop(devs):
+        hit = [i for i, d in devs.items() if a.who in (i, d["name"]) or i.startswith(a.who)]
+        if len(hit) != 1:
+            res["err"] = f"shepr: {'no' if not hit else 'more than one'} device matches {a.who!r}; see: shepr devices"
+            return
+        res["name"], res["id"] = devs[hit[0]]["name"], hit[0]
+        del devs[hit[0]]
+    mutate_devices(drop)
+    if "err" in res:
+        sys.exit(res["err"])
+    print(f"revoked {res['name']} ({res['id']}). That phone is signed out now.")
     return 0
+
+
+class CappedServer(ThreadingHTTPServer):
+    """ThreadingHTTPServer with a ceiling on concurrent connections (the rest are closed at once)."""
+    daemon_threads = True
+    _slots = threading.BoundedSemaphore(48)
+
+    def process_request(self, request, client_address):
+        if not self._slots.acquire(blocking=False):
+            self.shutdown_request(request)
+            return
+        super().process_request(request, client_address)
+
+    def process_request_thread(self, request, client_address):
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self._slots.release()
 
 
 def main():
@@ -1447,10 +1589,15 @@ def main():
     os.makedirs(STATE_DIR, mode=0o700, exist_ok=True)
     with open(state_path("server.json"), "w") as f:
         json.dump({"pid": os.getpid(), "port": a.port, "url": public_url(a.port), "started": int(time.time())}, f)
+    try:
+        os.makedirs(STATE_DIR, mode=0o700, exist_ok=True)
+        os.chmod(STATE_DIR, 0o700)   # an older or hand-made state directory must not be readable by other users
+    except OSError:
+        pass
     devices()
     threading.Thread(target=poller, daemon=True).start()
     handler = functools.partial(Handler, directory=HERE)
-    srv = ThreadingHTTPServer((a.bind, a.port), handler)
+    srv = CappedServer((a.bind, a.port), handler)
     print(f"shepr: serving {HERE} on http://{a.bind}:{a.port} as {LOCAL} "
           f"(owner={OWNER['login']}, devices={len(DEVICES)}, writes={'off' if READONLY else 'on, confirm-first'})",
           file=sys.stderr, flush=True)

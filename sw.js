@@ -2,7 +2,7 @@
    Goal: when the tailnet is unreachable, the user sees YOUR app with YOUR message,
    not Safari's error page. It is NOT a general offline database. */
 
-const VERSION = 'shepr-v14';
+const VERSION = 'shepr-v15';
 // The app shell: everything needed to paint a useful screen with no network.
 const SHELL = ['./', 'index.html', 'app.css', 'app.js', 'manifest.webmanifest', 'icons/icon-180.png', 'icons/icon-192.png'];
 
@@ -37,7 +37,17 @@ self.addEventListener('fetch', (e) => {
           if (res.ok) { const copy = res.clone(); caches.open(VERSION).then((c) => c.put(req, copy)); }
           return res;
         })
-        .catch(() => caches.match(req))
+        .catch(() => caches.match(req).then(async (hit) => {
+          // Offline: the last queue, but LABELLED as old. Its own age_s was true when it was cached, so
+          // recompute it from when it was built, or the app would show frozen statuses as current.
+          if (!hit) return hit;
+          try {
+            const q = await hit.clone().json();
+            q.cached = true;
+            q.age_s = Math.max(0, Math.round(Date.now() / 1000 - (q.now || 0)));
+            return new Response(JSON.stringify(q), { status: 200, headers: { 'Content-Type': 'application/json' } });
+          } catch (e) { return hit; }
+        }))
     );
     return;
   }

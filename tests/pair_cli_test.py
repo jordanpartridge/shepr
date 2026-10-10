@@ -38,3 +38,4 @@ res = json.load(urllib.request.urlopen(req))
 out, err = p.communicate(timeout=10)
 ok = p.returncode == 0 and "paired" in out and "cli-test" in out and res["fp"] in out
 print(("PASS" if ok else "FAIL"), "pair CLI waits, then reports the paired device:", out.strip().splitlines()[-1] if out.strip() else err)
+sys.exit(0 if good and (not have_server or ok) else 1)

@@ -23,7 +23,7 @@ workers on plain `http://`. `tailscale serve` supplies a real certificate on you
 ## Use it
 
 ```bash
-# once, on the machine that runs herdr (needs python3, tailscale, and herdr on PATH):
+# once, on the machine that runs herdr (needs python3, tailscale, herdr on PATH, and qrencode for the QR):
 git clone https://github.com/nixfred/shepr && cd shepr
 mkdir -p ~/.config/systemd/user ~/bin && ln -sf "$PWD/server.py" ~/bin/shepr
 cat > ~/.config/systemd/user/shepr.service <<EOF
@@ -156,6 +156,12 @@ preview-and-confirm sheet and run `herdr machine add|enable|disable`.
   (herdr refuses a fake agent that is not the pane's foreground process).
 - iOS may delete a Home Screen app's storage if it is removed; the key goes with it. Pair again.
 - One Shepr per phone install: the app is served from one origin.
+- The server listens on loopback and trusts `tailscale serve` to be the only way in. Another process on the same
+  machine can reach that port directly and is not asked for the Tailscale identity header (which it could forge
+  anyway). It still cannot read or send anything: every `/api` call except `hello` and `pair` needs a signature from
+  a paired phone, and pairing needs a one-time code from `shepr pair`.
+- Shepr polls every machine that is enabled in your herdr config. Machines you add from the Hosts tab are limited to
+  your own tailnet nodes, but one you added to herdr by hand is yours to vouch for.
 
 ## Layout
 
@@ -179,8 +185,11 @@ typed, no sheet open); inside a session it shows an **Update** button instead. I
 
 ```bash
 tests/fake-session.sh up                       # isolated herdr session "hrtest" with fake agents
-eval "$(tests/fake-session.sh env)"; SHEPR_URL=http://localhost:8743 python3 server.py 8743 &
+eval "$(tests/fake-session.sh env)"
+export SHEPR_URL=http://localhost:8743 SHEPR_POLL=3 CLAUDE_HOME=$PWD/tests/fixtures/claude-home   # the UI test expects these fixture skills
+python3 server.py 8743 &
 node tests/ui.mjs; node tests/sw_offline.mjs; node tests/format.mjs; python3 tests/pair_cli_test.py
+python3 tests/menu_parse_test.py; python3 tests/server_hardening_test.py   # pure Python, no server needed
 node tests/shots.mjs                           # regenerates docs/img/screens.png from the RUNNING app
 tests/fake-session.sh down
 ```
