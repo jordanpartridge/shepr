@@ -110,4 +110,26 @@ srv.READONLY = False
 plan = srv.build_plan({"host": "gus", "pane": "w1:p1", "kind": "multi", "picks": [], "advance": True})
 kept = next(l["v"] for l in plan["lines"] if l["k"] == "Leaves ticked")
 check("multi: a checked 'Type something' row is disclosed, not hidden", "Type something" in kept and "cannot be changed" in kept)
+
+# ---- uploads from the phone: what a file really is, where it is stored, and how it is cleaned up
+PNG = b"\x89PNG\r\n\x1a\n" + b"x" * 50
+check("upload: a PNG, JPEG, GIF, WEBP and PDF are recognised by their first bytes, whatever the phone calls them",
+      [srv.sniff_upload(b, "exe") for b in (PNG, b"\xff\xd8\xff\xe0" + b"x" * 9, b"GIF89a" + b"x" * 9, b"RIFF\0\0\0\0WEBPx", b"%PDF-1.7 x")] == ["png", "jpg", "gif", "webp", "pdf"])
+check("upload: an executable, a script and unknown bytes are refused", all(srv.sniff_upload(b, e) is None for b, e in ((b"MZ\x90\x00" + b"x" * 20, "exe"), (b"#!/bin/sh\nrm -rf x", "sh"), (b"\x7fELF" + b"x" * 9, "bin"))))
+check("upload: plain text is accepted only with a text extension, and not with a NUL or bad UTF-8",
+      srv.sniff_upload(b"hello", "txt") == "txt" and srv.sniff_upload(b"hello", "sh") is None and srv.sniff_upload(b"a\x00b", "txt") is None and srv.sniff_upload(b"\xff\xfe\xfa", "txt") is None)
+r = srv.save_upload(PNG, "png", "dev1")
+st = os.stat(r["path"]); dst = os.stat(os.path.dirname(r["path"]))
+check("upload: stored under the state dir, mode 0600 in a 0700 folder, with a random name", r["path"].startswith(srv.upload_dir()) and st.st_mode & 0o777 == 0o600 and dst.st_mode & 0o777 == 0o700 and r["kind"] == "png" and open(r["path"], "rb").read() == PNG)
+for bad, why in ((b"", "empty"), (b"x" * (srv.UPLOAD_MAX + 1), "too big")):
+    try: srv.save_upload(bad, "txt", "dev1"); refused = False
+    except srv.HerdrError as e: refused = e.code in ("too_big", "bad_type")
+    check(f"upload: a {why} file is refused", refused)
+os.utime(r["path"], (time.time() - 8 * 86400,) * 2)
+r2 = srv.save_upload(PNG, "png", "dev1")
+check("upload: files older than a week are deleted on the next upload", not os.path.exists(r["path"]) and os.path.exists(r2["path"]))
+srv.UPLOAD_DIR_CAP = 120
+paths = [srv.save_upload(PNG + bytes([i]), "png", "dev1")["path"] for i in range(5)]
+check("upload: the folder is kept under its size cap by dropping the oldest first", sum(os.path.getsize(p) for p in paths if os.path.exists(p)) <= 120 and os.path.exists(paths[-1]))
+
 sys.exit(0 if ok else 1)

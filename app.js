@@ -8,7 +8,7 @@
      3. No timer, retry or "auto" anything ever sends. A failed send is reported, never repeated.
      4. The private key never leaves the phone: it is generated non-extractable and only signs. */
 'use strict';
-const BUILD = 'v21';   // keep equal to sw.js VERSION: shown in Keys and logged by the host, so you can see which app a phone is running
+const BUILD = 'v22';   // keep equal to sw.js VERSION: shown in Keys and logged by the host, so you can see which app a phone is running
 
 // ---------------------------------------------------------------------------
 // 1. Service worker. Without this, a dead tailnet shows Safari's error page and
@@ -134,7 +134,7 @@ async function signHeaders(method, path, body) {
   const u = new URL(path, location.href);
   const ts = String(Math.round(Date.now() + S.skew));
   const nonce = b64u(crypto.getRandomValues(new Uint8Array(12)));
-  const bh = hex(await crypto.subtle.digest('SHA-256', enc.encode(body || '')));
+  const bh = hex(await crypto.subtle.digest('SHA-256', body instanceof Uint8Array ? body : enc.encode(body || '')));
   const msg = [ts, nonce, method, u.pathname + u.search, bh].join('\n');
   const sig = await crypto.subtle.sign({ name: 'ECDSA', hash: 'SHA-256' }, S.dev.key, enc.encode(msg));
   return { 'X-Shepr-Device': S.dev.id, 'X-Shepr-Ts': ts, 'X-Shepr-Nonce': nonce, 'X-Shepr-Sig': b64u(sig) };
@@ -1394,6 +1394,44 @@ function paintMulti(opt, m) {
   opt.append(go);
 }
 
+// ---- photos and files: resize on the phone, upload to the host, and put the saved path in the message box.
+// Uploading sends nothing to an agent: you add a note and Send, and the confirm sheet shows the exact text.
+async function prepareUpload(file) {
+  const isImg = /^image\//.test(file.type) || /\.(heic|heif|jpe?g|png|gif|webp)$/i.test(file.name);
+  if (isImg) {
+    if (file.type === 'image/png' && file.size <= 4 * 1024 * 1024) return { bytes: new Uint8Array(await file.arrayBuffer()), ext: 'png' };   // keep screenshots crisp
+    const bmp = await createImageBitmap(file);   // Safari decodes HEIC here, so a camera photo becomes an ordinary JPEG
+    const scale = Math.min(1, 2000 / Math.max(bmp.width, bmp.height));
+    const c = document.createElement('canvas'); c.width = Math.max(1, Math.round(bmp.width * scale)); c.height = Math.max(1, Math.round(bmp.height * scale));
+    c.getContext('2d').drawImage(bmp, 0, 0, c.width, c.height);
+    const blob = await new Promise((res) => c.toBlob(res, 'image/jpeg', 0.85));
+    return { bytes: new Uint8Array(await blob.arrayBuffer()), ext: 'jpg' };
+  }
+  return { bytes: new Uint8Array(await file.arrayBuffer()), ext: (file.name.split('.').pop() || '').toLowerCase() };
+}
+$('attachbtn').addEventListener('click', () => { if (S.cur) $('filepick').click(); });
+$('filepick').addEventListener('change', async () => {
+  const f = $('filepick').files && $('filepick').files[0];
+  $('filepick').value = '';
+  if (!f || !S.cur) return;
+  const to = S.cur;
+  $('attachbtn').disabled = true; $('attachbtn').classList.add('on');
+  notify('Uploading ' + f.name + '\u2026', false);
+  try {
+    const { bytes, ext } = await prepareUpload(f);
+    if (bytes.length > 8 * 1024 * 1024) throw new Error('That file is over 8 MB even after shrinking it.');
+    const r = await api('api/upload?host=' + encodeURIComponent(to.host) + '&ext=' + encodeURIComponent(ext),
+      { method: 'POST', headers: { 'Content-Type': 'application/octet-stream', 'X-Shepr': '1' }, body: bytes });
+    if (S.cur && S.cur.host === to.host && S.cur.pane === to.pane) {
+      const m = $('msg');
+      m.value = (m.value ? m.value.replace(/\s*$/, ' ') : '') + r.path + ' ';
+      autosize();
+      notify('Attached ' + Math.round(r.bytes / 1024) + ' KB. Add a note if you like, then Send.', false);
+    }
+  } catch (e) { notify(e.message, true); }
+  finally { $('attachbtn').disabled = false; $('attachbtn').classList.remove('on'); }
+});
+
 function stageKey(k) {
   if (S.keybuf.length >= 8) return;
   S.keybuf.push(k); paintStage();
@@ -1721,4 +1759,4 @@ async function boot() {
   hideSplash(false);
 }
 boot();
-window.shepr = { S, ping, standalone, signHeaders, renderBlocks, appIsStale, BUILD, liveCut, syncHistory };
+window.shepr = { S, ping, standalone, signHeaders, renderBlocks, appIsStale, BUILD, liveCut, syncHistory, prepareUpload };

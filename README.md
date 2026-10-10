@@ -109,6 +109,16 @@ the exact command, and what the `ccc` alias expands to on this host, and nothing
 the project in the background (it does not take over your screen) and types `mkdir -p ~/Projects/<folder> && cd
 ~/Projects/<folder> && ccc` into it. Override the command with `SHEPR_NEW_CMD` and the base folder with `SHEPR_PROJECTS`.
 
+### Photos and files
+
+The camera button next to the message box attaches a photo, a PDF or a plain text file (`txt md log json csv`) from your phone.
+A photo is shrunk to 2000 px on the phone first (a PNG screenshot under 4 MB is sent as is, so text stays sharp). It is uploaded
+signed, to this host only, checked by its first bytes rather than its name or the type the phone claims (programs and scripts
+are refused), stored `0600` under `~/.local/state/shepr/uploads/<date>/` with a random name, and **deleted after a week**
+(the folder is also kept under 300 MB). The saved path is then placed in the message box for you to add a note and Send, so
+uploading sends nothing to anyone and the confirm sheet shows the exact text. Claude Code reads a path like that as an
+image attachment. Sessions on another host are refused, because the file would be on the wrong machine. Up to 8 MB per file.
+
 ### Wake a project that is asleep
 
 At the bottom of the Queue, **Asleep (N)** counts herdr projects whose terminal has no Claude or Codex session running. **Wake…**

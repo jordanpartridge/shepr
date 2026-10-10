@@ -40,7 +40,7 @@ async function tap(page, sel, n = 1, gap = 90) {
 }
 const watch = (page) => {
   page.on('pageerror', (e) => errs.push('pageerror: ' + e.message));
-  page.on('console', (m) => { if (m.type() === 'error' && !/400|401|403|409|410|429|502/.test(m.text())) errs.push('console: ' + m.text()); });
+  page.on('console', (m) => { if (m.type() === 'error' && !/400|401|403|404|409|410|429|502/.test(m.text())) errs.push('console: ' + m.text()); });
 };
 
 const dev = devices['iPhone 14'];
@@ -588,6 +588,59 @@ const browser = await chromium.launch({ executablePath: '/usr/bin/chromium', arg
     check('new: the server refuses path tricks, empty or oversized names, and newlines on its own', bads.every((b) => /^400 /.test(b) && /bad_dir|bad_name/.test(b)));
     if (ws) hr('workspace', 'close', ws.workspace_id);
     fs.rmSync('/tmp/shepr-projects', { recursive: true, force: true });
+  }
+
+  // ---- photos and files: resize on the phone, store on the host, put the path in the message box, send nothing
+  {
+    const TINY_PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64');
+    await tap(page, '.tab[data-view=waiting]'); await page.waitForTimeout(400);
+    const key = await page.evaluate(() => { const a = window.shepr.S.q.agents.find((x) => x.status === 'blocked'); return a.host + '|' + a.pane; });
+    await tap(page, `.item[data-key="${key}"]`); await page.waitForSelector('#detail:not([hidden])'); await page.waitForTimeout(500);
+    check('photo: the message bar has an attach button', !!(await page.$('#attachbtn')) && (await page.$eval('#attachbtn', (b) => b.getBoundingClientRect().height)) >= 44);
+    await page.screenshot({ path: `${OUT}/p1-attach-button.png` });
+    await page.setInputFiles('#filepick', { name: 'shot.png', mimeType: 'image/png', buffer: TINY_PNG });
+    await page.waitForFunction(() => /\/uploads\/.+\.png/.test(document.getElementById('msg').value), null, { timeout: 8000 });
+    const m1 = await page.inputValue('#msg');
+    const p1 = m1.trim().split(/\s+/).pop();
+    check('photo: the saved path lands in the message box, ready for a note', /\/uploads\/\d{4}-\d{2}-\d{2}\/[0-9a-f]{16}\.png$/.test(p1));
+    check('photo: the file on the host is the PNG, private (0600)', fs.existsSync(p1) && Buffer.compare(fs.readFileSync(p1), TINY_PNG) === 0 && (fs.statSync(p1).mode & 0o777) === 0o600);
+    await page.fill('#msg', '');
+    await page.setInputFiles('#filepick', { name: 'notes.txt', mimeType: 'text/plain', buffer: Buffer.from('line one\nline two\n') });
+    await page.waitForFunction(() => /\.txt/.test(document.getElementById('msg').value), null, { timeout: 8000 });
+    const p2 = (await page.inputValue('#msg')).trim().split(/\s+/).pop();
+    check('photo: a plain text file is stored as text', fs.readFileSync(p2, 'utf8') === 'line one\nline two\n');
+    await page.fill('#msg', 'keep this');
+    await page.setInputFiles('#filepick', { name: 'evil.exe', mimeType: 'application/octet-stream', buffer: Buffer.from('MZ\x90\x00 not allowed') });
+    await page.waitForFunction(() => /not a photo|will accept/.test(document.body.textContent), null, { timeout: 8000 });
+    check('photo: a program is refused with a reason, and the message box is untouched', (await page.inputValue('#msg')) === 'keep this');
+    const big = await page.evaluate(async () => { const c = document.createElement('canvas'); c.width = 3200; c.height = 2400; const x = c.getContext('2d');
+      for (let i = 0; i < 40; i++) { x.fillStyle = `hsl(${i * 9},80%,50%)`; x.fillRect(i * 80, (i % 7) * 340, 300, 600); }
+      const blob = await new Promise((r) => c.toBlob(r, 'image/jpeg', 0.95)); const f = new File([blob], 'IMG_0001.JPG', { type: 'image/jpeg' });
+      const out = await window.shepr.prepareUpload(f); const bmp = await createImageBitmap(new Blob([out.bytes]));
+      return { w: bmp.width, h: bmp.height, ext: out.ext, magic: Array.from(out.bytes.slice(0, 3)), orig: blob.size, now: out.bytes.length }; });
+    check('photo: a big camera photo is shrunk to 2000 px and sent as JPEG', Math.max(big.w, big.h) === 2000 && big.ext === 'jpg' && big.magic.join() === '255,216,255' && big.now < big.orig);
+    // the endpoint itself, with hostile requests
+    const tryUp = (opts) => page.evaluate(async (o) => {
+      const path = 'api/upload?host=' + encodeURIComponent(o.host || window.shepr.S.hello.name) + '&ext=' + (o.ext || 'png');
+      const bytes = o.bytes ? new Uint8Array(o.bytes) : new Uint8Array(10);
+      const h = { 'Content-Type': o.ctype || 'application/octet-stream' }; if (o.xs !== false) h['X-Shepr'] = '1';
+      if (o.sign !== false) Object.assign(h, await window.shepr.signHeaders('POST', path, o.signedBody || bytes));
+      const r = await fetch(path, { method: 'POST', headers: h, body: bytes }); return r.status + ' ' + (await r.text()).slice(0, 120); },
+      opts);
+    const png = [...TINY_PNG];
+    const res = { unsigned: await tryUp({ sign: false, bytes: png }), json: await tryUp({ ctype: 'application/json', bytes: png }), noHeader: await tryUp({ xs: false, bytes: png }),
+                  badMagic: await tryUp({ bytes: [77, 90, 0, 0, 1, 2, 3] }), badHost: await tryUp({ host: 'nowhere', bytes: png }), tampered: await tryUp({ bytes: png, signedBody: new Uint8Array(3) }),
+                  tooBig: await page.evaluate(async () => { const path = 'api/upload?host=' + window.shepr.S.hello.name + '&ext=png'; const b = new Uint8Array(9 * 1024 * 1024);
+                    const r = await fetch(path, { method: 'POST', headers: Object.assign({ 'Content-Type': 'application/octet-stream', 'X-Shepr': '1' }, await window.shepr.signHeaders('POST', path, b)), body: b }); return r.status + ' ' + (await r.text()).slice(0, 90); }) };
+    console.log('   upload attacks:', JSON.stringify(Object.fromEntries(Object.entries(res).map(([k, v]) => [k, v.slice(0, 22)]))));
+    check('photo: an unsigned upload is refused (401)', /^401 /.test(res.unsigned));
+    check('photo: a wrong content type, a missing header, a tampered body and a bad host are refused (400/401)', /^400 /.test(res.json) && /^400 /.test(res.noHeader) && /^401 /.test(res.tampered) && /^40[04] /.test(res.badHost));
+    check('photo: bytes that are not an allowed type are refused with a reason', /^400 /.test(res.badMagic) && /not a photo/.test(res.badMagic));
+    check('photo: a 9 MB upload is refused before it is read', /^400 /.test(res.tooBig) && /too large/.test(res.tooBig));
+    await page.fill('#msg', 'what is this? ' + p1); await page.click('#send'); await page.waitForSelector('#sheet:not([hidden]) .kv');
+    check('photo: Send still shows the exact text on the confirm sheet, with the path in it', (await page.textContent('#sheet .kv')).includes(p1));
+    await page.click('#sheet .btns button:first-child'); await page.fill('#msg', '');
+    await page.click('#dback').catch(() => {}); await page.waitForTimeout(400);
   }
 
   // ---- an app newer than its server: say so plainly instead of a confusing pane error

@@ -1664,6 +1664,92 @@ def commit_wake(plan):
     return {"ok": True, "woke": sent, "skipped": skipped, "failed": failed}
 
 
+
+# --------------------------------------------------------------------------------------------
+# photos and files from the phone: stored privately on THIS host, the path comes back, and the person sends it to an agent
+# through the normal confirm sheet. Nothing is sent to an agent by uploading.
+# --------------------------------------------------------------------------------------------
+UPLOAD_MAX = 8 << 20                   # bytes per file
+UPLOAD_KEEP_S = 7 * 86400              # uploads are deleted after a week
+UPLOAD_DIR_CAP = 300 << 20             # and the folder never grows past this
+TEXT_EXT = {"txt", "md", "log", "json", "csv"}
+
+
+def upload_dir():
+    return os.path.join(STATE_DIR, "uploads")
+
+
+def sniff_upload(raw, ext):
+    """What a file really is, from its first bytes (never from what the phone claims). None = not allowed."""
+    if raw[:3] == b"\xff\xd8\xff":
+        return "jpg"
+    if raw[:8] == b"\x89PNG\r\n\x1a\n":
+        return "png"
+    if raw[:6] in (b"GIF87a", b"GIF89a"):
+        return "gif"
+    if raw[:4] == b"RIFF" and raw[8:12] == b"WEBP":
+        return "webp"
+    if raw[:5] == b"%PDF-":
+        return "pdf"
+    if ext in TEXT_EXT and b"\x00" not in raw:
+        try:
+            raw.decode("utf-8")
+            return ext
+        except UnicodeDecodeError:
+            return None
+    return None
+
+
+def prune_uploads():
+    now, files = time.time(), []
+    for root, _d, names in os.walk(upload_dir()):
+        for n in names:
+            p = os.path.join(root, n)
+            try:
+                st = os.stat(p)
+            except OSError:
+                continue
+            if now - st.st_mtime > UPLOAD_KEEP_S:
+                try:
+                    os.remove(p)
+                except OSError:
+                    pass
+            else:
+                files.append((st.st_mtime, st.st_size, p))
+    total = sum(f[1] for f in files)
+    for _mt, size, p in sorted(files):          # oldest first, until it fits
+        if total <= UPLOAD_DIR_CAP:
+            break
+        try:
+            os.remove(p); total -= size
+        except OSError:
+            pass
+
+
+def save_upload(raw, ext, device):
+    """Validate and store one upload. Returns {"path", "bytes", "kind"}."""
+    if not 0 < len(raw) <= UPLOAD_MAX:
+        raise HerdrError("too_big", f"files can be up to {UPLOAD_MAX >> 20} MB")
+    kind = sniff_upload(raw, ext)
+    if not kind:
+        raise HerdrError("bad_type", "that is not a photo, a PDF, or a plain text file Shepr will accept")
+    day = time.strftime("%Y-%m-%d")
+    d = os.path.join(upload_dir(), day)
+    os.makedirs(d, mode=0o700, exist_ok=True)
+    os.chmod(upload_dir(), 0o700)
+    path = os.path.join(d, secrets.token_hex(8) + "." + kind)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "wb") as f:
+        f.write(raw)
+    prune_uploads()
+    try:
+        with open(state_path("sends.jsonl"), "a") as f:
+            f.write(json.dumps({"t": int(time.time()), "kind": "upload", "device": device, "bytes": len(raw), "type": kind}) + "\n")
+    except OSError:
+        pass
+    return {"ok": True, "path": path, "bytes": len(raw), "kind": kind}
+
+
 # --------------------------------------------------------------------------------------------
 # HTTP
 # --------------------------------------------------------------------------------------------
@@ -1734,8 +1820,8 @@ class Handler(SimpleHTTPRequestHandler):
             origin = self.headers.get("Origin")
             if origin and urlsplit(origin).netloc.lower() != raw.lower():
                 self.json_out(403, {"error": "origin", "message": "cross-origin write refused"}); return None
-            if self.headers.get("X-Shepr") != "1" or \
-                    not (self.headers.get("Content-Type") or "").startswith("application/json"):
+            want = "application/octet-stream" if self.path.startswith("/api/upload") else "application/json"
+            if self.headers.get("X-Shepr") != "1" or not (self.headers.get("Content-Type") or "").startswith(want):
                 self.json_out(400, {"error": "bad_request", "message": "JSON with X-Shepr: 1 required"}); return None
         return login or "local"
 
@@ -1749,10 +1835,10 @@ class Handler(SimpleHTTPRequestHandler):
             raw = b""
             if post:
                 n = int(self.headers.get("Content-Length") or 0)
-                if not 0 < n <= 16384:
+                if not 0 < n <= (UPLOAD_MAX if u.path == "/api/upload" else 16384):
                     raise HerdrError("bad_request", "body missing or too large")
                 raw = self.rfile.read(n)
-            body = json.loads(raw) if post else {}
+            body = json.loads(raw) if post and u.path != "/api/upload" else {}
             if post and not isinstance(body, dict):
                 raise HerdrError("bad_request", "body must be an object")
 
@@ -1815,6 +1901,10 @@ class Handler(SimpleHTTPRequestHandler):
                 return self.json_out(200, out)
             if post and u.path == "/api/hosts/scan":
                 return self.json_out(200, {"started": start_scan()})
+            if post and u.path == "/api/upload":
+                if need_host(q.get("host", ""))["kind"] != "local":
+                    raise HerdrError("remote_unsupported", "photos and files can only be sent to sessions on this host: the file is stored here")
+                return self.json_out(200, save_upload(raw, re.sub(r"[^a-z]", "", q.get("ext", "").lower())[:5], viewer))
             if post and u.path == "/api/send/prepare":
                 return self.json_out(200, build_plan(body))
             if post and u.path == "/api/send/commit":

@@ -496,3 +496,6 @@ button{font:inherit;color:inherit}
 .npf{margin-bottom:8px}
 .npf .k{font-size:13px;font-weight:700;letter-spacing:.8px;text-transform:uppercase;color:var(--dim);margin:0 2px 4px}
 .npf .search{margin-bottom:0}
+
+.attachbtn svg{width:24px;height:24px;fill:none;stroke:var(--accent);stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+.attachbtn:disabled{opacity:.5}
