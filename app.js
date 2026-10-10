@@ -8,7 +8,7 @@
      3. No timer, retry or "auto" anything ever sends. A failed send is reported, never repeated.
      4. The private key never leaves the phone: it is generated non-extractable and only signs. */
 'use strict';
-const BUILD = 'v18';   // keep equal to sw.js VERSION: shown in Keys and logged by the host, so you can see which app a phone is running
+const BUILD = 'v20';   // keep equal to sw.js VERSION: shown in Keys and logged by the host, so you can see which app a phone is running
 
 // ---------------------------------------------------------------------------
 // 1. Service worker. Without this, a dead tailnet shows Safari's error page and
@@ -281,6 +281,12 @@ function fetchQueue(fresh) {
   $('mini').classList.add('busy');
   return api('api/queue' + (fresh ? '?fresh=1' : '')).then((q) => {
     S.q = q; setOnline(!q.cached); render(); if (!q.cached) appIsStale(q.build);
+    // The app files can be newer than the server process behind them (files are served live, the server only changes when
+    // it restarts). New buttons then fail in confusing ways, so say it plainly once.
+    if (!q.cached && q.server_build && q.build && q.server_build !== q.build && !S.skewShown) {
+      S.skewShown = true;
+      notify('This host is running Shepr ' + q.server_build + ' but the app is ' + q.build + '. Restart Shepr on the host, or newer buttons will fail.', true);
+    }
   }).catch((e) => { if (!e.status) setOnline(false); })
     .finally(() => { fetching = false; setTimeout(() => $('mini').classList.remove('busy'), 400); });
 }
@@ -438,6 +444,11 @@ function paintMain() {
   m.textContent = '';
   if (S.tab === 'waiting') {
     const w = waiting(), d = finished(), sl = sleeping(), wk = working();
+    if (S.q && S.q.writes) {   // the one big button: a brand-new project (name, folder, ccc)
+      const nb = btn('', 'newbig', openNewProject); nb.id = 'newproject';
+      nb.append(el('span', 'plus', '+'), el('span', 'lbl', 'Start new'), el('span', 'sub2', 'a new project'));
+      m.append(nb);
+    }
     if (!w.length && !d.length) {
       const e = el('div', 'empty');
       const r = el('div', 'radar tiny'); r.append(el('i'), el('i'), el('i'), el('b'));
@@ -754,6 +765,43 @@ function openGoTo(prefill) {
   openSheet(box);
 }
 
+// ---- Start new: a brand-new project. Ask for the name that goes on the herdr title bar and the folder under ~/Projects,
+// then (after you confirm) herdr makes the project, the folder is made, and ccc is started in it.
+const slug = (s) => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60);
+const DIR_OK = /^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$/;
+function openNewProject() {
+  const box = el('div');
+  box.append(el('h3', null, 'Start a new project'),
+             el('div', 'sub', 'Makes a new herdr project, creates its folder in ~/Projects, and starts ccc in it. You confirm first.'));
+  const field = (label, input) => { const f = el('div', 'npf'); f.append(el('div', 'k', label), input); return f; };
+  const mk = (ph, max) => { const i = el('input', 'search'); i.type = 'text'; i.placeholder = ph; i.maxLength = max; i.autocomplete = 'off'; i.autocapitalize = 'off'; i.spellcheck = false; return i; };
+  const name = mk('shows on the herdr title bar', 60), dir = mk('folder-name', 80);
+  name.id = 'np-name'; dir.id = 'np-dir';
+  const hostsOk = ((S.q && S.q.hosts) || []).filter((h) => h.status === 'ok');
+  let sel = null;
+  if (hostsOk.length > 1) {
+    sel = el('select', 'search'); sel.id = 'np-host';
+    hostsOk.forEach((h) => { const o = el('option', null, h.id); o.value = h.id; if (S.hello && h.id === S.hello.name) o.selected = true; sel.append(o); });
+  }
+  const where = el('div', 'dim'); where.style.cssText = 'font-size:14.5px;margin:2px 2px 10px;overflow-wrap:anywhere';
+  let touched = false;
+  const go = btn('Review', 'go', () => prepare({ kind: 'new_project', host: sel ? sel.value : (S.hello && S.hello.name) || (hostsOk[0] && hostsOk[0].id), name: name.value.trim(), dir: dir.value.trim() }));
+  const upd = () => {
+    where.textContent = dir.value ? '~/Projects/' + dir.value : '';
+    go.disabled = !(name.value.trim() && DIR_OK.test(dir.value.trim()) && !dir.value.trim().endsWith('.'));
+    dir.style.borderColor = dir.value && go.disabled ? 'var(--hot)' : '';
+  };
+  name.addEventListener('input', () => { if (!touched) dir.value = slug(name.value); upd(); });
+  dir.addEventListener('input', () => { touched = true; upd(); });
+  box.append(field('Project name', name), field('Folder in ~/Projects', dir), ...(sel ? [field('Host', sel)] : []), where);
+  const row = el('div', 'btns');
+  row.append(btn('Cancel', '', closeSheet), go);
+  box.append(row);
+  upd();
+  openSheet(box);
+  setTimeout(() => name.focus(), 50);
+}
+
 // ---- wake a PROJECT: start Claude in a terminal that has no agent in it. Pick, then confirm the exact command.
 const agoText = (ts) => {
   const s = Math.max(0, Math.floor(Date.now() / 1000 - ts));
@@ -767,7 +815,7 @@ function openAsleep() {
              el('div', 'sub', 'Starts Claude or Codex in that project’s terminal. You see the exact command before anything runs.'));
   let mode = store.get('shepr.wakemode', 'continue') === 'fresh' ? 'fresh' : 'continue';
   const seg = el('div', 'seg');
-  const bR = btn('Resume last', 'mini-btn', () => setMode('continue')), bN = btn('Start new', 'mini-btn', () => setMode('fresh'));
+  const bR = btn('Resume last', 'mini-btn', () => setMode('continue')), bN = btn('Fresh session', 'mini-btn', () => setMode('fresh'));
   seg.append(bR, bN);
   const inp = el('input', 'search'); inp.type = 'search'; inp.placeholder = 'Search projects'; inp.autocomplete = 'off'; inp.autocapitalize = 'off'; inp.spellcheck = false;
   const list = el('div', 'golist');
@@ -844,15 +892,15 @@ const HOST_KINDS = ['host_enable', 'host_disable', 'host_add', 'device_revoke'];
 function showPlan(plan) {
   const t = plan.target;
   const isHost = HOST_KINDS.indexOf(plan.kind) >= 0;
-  const isWake = plan.kind === 'wake', isStart = plan.kind === 'start';
+  const isWake = plan.kind === 'wake', isStart = plan.kind === 'start', isNew = plan.kind === 'new_project';
   const box = el('div');
-  box.append(el('h3', null, plan.approves ? 'This approves it. Send?' : isWake ? 'Wake these sessions?' : isStart ? 'Wake this project?' : isHost ? 'Make this change?' : 'Send this?'),
+  box.append(el('h3', null, plan.approves ? 'This approves it. Send?' : isWake ? 'Wake these sessions?' : isStart ? 'Wake this project?' : isNew ? 'Start this new project?' : isHost ? 'Make this change?' : 'Send this?'),
              el('div', 'sub', [t.host, t.title, t.pane].filter(Boolean).join(' · ') + (t.status ? ' · ' + (STATE_LABEL[t.status] || t.status) : '')));
   if (plan.approves) box.append(el('div', 'warnbox', 'The option you picked reads like an approval. Check it is what you mean.'));
   const kv = el('div', 'kv selectable');
   plan.lines.forEach((l) => { kv.append(el('div', 'k', l.k), el('div', 'v', l.v)); });
   box.append(kv);
-  const go = btn(isWake ? 'Wake them' : isStart ? 'Start it' : isHost ? 'Do it' : 'Send', 'go' + (plan.approves ? ' appr' : ''), () => commit(plan, go));
+  const go = btn(isWake ? 'Wake them' : isStart ? 'Start it' : isNew ? 'Create it' : isHost ? 'Do it' : 'Send', 'go' + (plan.approves ? ' appr' : ''), () => commit(plan, go));
   // WHY: the sheet appears under the thumb that just tapped Send in the dock. A short dead time
   // stops a double-tap or a late touch from confirming something nobody has read yet.
   go.disabled = true;
@@ -868,6 +916,11 @@ function commit(plan, goBtn) {
   const sentTo = S.cur ? S.cur.host + '|' + S.cur.pane : null;
   post('api/send/commit', { nonce: plan.nonce }).then((r) => {
     closeSheet();
+    if (plan.kind === 'new_project') {
+      notify('Created ' + plan.target.title + '. Claude is starting there.', false);
+      fetchQueue(true); setTimeout(() => fetchQueue(true), 3000); setTimeout(() => fetchQueue(true), 8000);
+      return;
+    }
     if (plan.kind === 'start') {
       notify('Starting ' + plan.target.title + '. It appears in the queue in a few seconds.', false);
       fetchQueue(true); setTimeout(() => fetchQueue(true), 3000); setTimeout(() => fetchQueue(true), 8000);
@@ -901,7 +954,7 @@ function commit(plan, goBtn) {
 
 function prepare(body) {
   if (body.kind === 'text') S.lastText = body.text;
-  const isHost = HOST_KINDS.indexOf(body.kind) >= 0 || body.kind === 'wake' || body.kind === 'start';
+  const isHost = HOST_KINDS.indexOf(body.kind) >= 0 || body.kind === 'wake' || body.kind === 'start' || body.kind === 'new_project';
   if (!isHost && !S.cur) return;
   const b = isHost ? body : Object.assign({ host: S.cur.host, pane: S.cur.pane }, body);
   post('api/send/prepare', b).then((p) => { p.kind = p.kind || body.kind; showPlan(p); })

@@ -461,6 +461,9 @@ def shell_build():
     return _build_cache[1]
 
 
+BOOT_BUILD = shell_build()   # the app version this server process started with (the live shell_build() follows the files on disk)
+
+
 def build_queue():
     now = time.time()
     with LOCK:
@@ -477,7 +480,7 @@ def build_queue():
     agents.sort(key=lambda a: (order.get(a["status"], 4), a.get("since", 0), a.get("seq") or 0,
                                a["host"], a["project"]))
     return {"now": now, "age_s": int(now - ts) if ts else None, "polls": polls, "hosts": hosts,
-            "agents": agents, "writes": not READONLY, "viewer": None, "poll_s": POLL_S, "build": shell_build()}
+            "agents": agents, "writes": not READONLY, "viewer": None, "poll_s": POLL_S, "build": shell_build(), "server_build": BOOT_BUILD}
 
 
 # --------------------------------------------------------------------------------------------
@@ -561,11 +564,16 @@ def build_plan(body):
         return plan_wake(body)
     if body.get("kind") == "start":
         return plan_start(body)
+    if body.get("kind") == "new_project":
+        return plan_new_project(body)
+    kind = body.get("kind")
+    if kind not in ("text", "keys", "choose", "multi"):
+        raise HerdrError("bad_kind", f"this host's Shepr does not know the action {str(kind)[:30]!r}. It is older than the app on your "
+                                     "phone: restart Shepr on the host so the two match.")
     host = need_host(str(body.get("host", "")))
     pane = str(body.get("pane", ""))
     if not PANE_RE.match(pane):
         raise HerdrError("bad_pane", "not a pane id")
-    kind = body.get("kind")
     a = get_agent(host, pane)
     status = a["agent_status"]
     steps, lines, approves = [], [], False
@@ -708,6 +716,8 @@ def commit_plan(nonce):
         return commit_wake(plan)
     if plan["kind"] == "start":
         return commit_start(plan)
+    if plan["kind"] == "new_project":
+        return commit_new_project(plan)
     host = need_host(plan["host"])
     with pane_lock(plan["host"], plan["pane"]):   # verify and dispatch as one step per pane
         return _commit_pane_plan(host, plan)
@@ -1497,6 +1507,91 @@ def commit_start(plan):
     return {"ok": True, "sent": ["run"]}
 
 
+
+# --------------------------------------------------------------------------------------------
+# a NEW project: a new herdr workspace (its title-bar name), a folder under ~/Projects, and `ccc` started in it
+# --------------------------------------------------------------------------------------------
+NEW_CMD = os.environ.get("SHEPR_NEW_CMD", "ccc")              # what is typed to start the session (an alias on Fred's hosts)
+PROJECTS_DIR = os.environ.get("SHEPR_PROJECTS", "~/Projects")   # where project folders live (tests point it at /tmp)
+DIR_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$")      # one plain folder name: no slash, no leading dot or dash
+
+
+def alias_expansion(name):
+    """Best effort, local only: what a shell alias expands to, read from the alias files (nothing is executed)."""
+    files = [os.path.expanduser("~/.bashrc"), os.path.expanduser("~/.bash_aliases")] + sorted(glob.glob(os.path.expanduser("~/.config/bash/*.sh")))
+    found = None
+    rx = re.compile(r"^\s*alias\s+" + re.escape(name) + r"=(['\"])(.*?)\1\s*(?:#.*)?$")
+    for fp in files:
+        try:
+            for line in open(fp, errors="replace"):
+                m = rx.match(line)
+                if m:
+                    found = m.group(2)
+        except OSError:
+            continue
+    return found
+
+
+def plan_new_project(body):
+    host = need_host(str(body.get("host", "")))
+    name = body.get("name")
+    if not isinstance(name, str) or CTRL_RE.search(name) or "\n" in name:
+        raise HerdrError("bad_name", "the project name must be plain text on one line")
+    name = " ".join(name.split())
+    if not 1 <= len(name) <= 60:
+        raise HerdrError("bad_name", "the project name must be 1 to 60 characters")
+    d = body.get("dir")
+    if not isinstance(d, str) or not DIR_RE.match(d) or d.endswith("."):
+        raise HerdrError("bad_dir", "the folder must be one plain name: letters, digits, dot, dash or underscore, starting with a letter or digit")
+    path = f"{PROJECTS_DIR.rstrip('/')}/{d}"
+    cmd = f"mkdir -p {path} && cd {path} && {NEW_CMD}"
+    lines = [("Title-bar name", name), ("Folder", path), ("Host", host["id"])]
+    if host["kind"] == "local":
+        real = os.path.expanduser(path)
+        lines[1] = ("Folder", path + ("   (already exists: it will be reused)" if os.path.isdir(real) else "   (will be created)"))
+    try:
+        if any(w.get("label") == name for w in run_herdr(host["machine"], ["workspace", "list"], timeout=8)["result"]["workspaces"]):
+            lines.append(("Heads up", "a herdr project with this name already exists. A second one will be made."))
+    except (HerdrError, KeyError, TypeError):
+        pass
+    lines.append(("Then types", cmd))
+    ex = alias_expansion(NEW_CMD) if host["kind"] == "local" and NEW_CMD == "ccc" else None
+    if ex:
+        lines.append((f"{NEW_CMD} runs", ex))
+    lines.append(("Note", "makes a new herdr project in the background (it will not take over your screen), then types that command into it."))
+    plan = {"nonce": secrets.token_urlsafe(18), "host": host["id"], "pane": "", "kind": "new_project",
+            "steps": [{"op": "new_project", "label": name, "cmd": cmd, "cwd": None if host["kind"] != "local" else os.path.expanduser(PROJECTS_DIR)}],
+            "expires": time.time() + NONCE_TTL_S}
+    register_plan(plan)
+    return {"nonce": plan["nonce"], "kind": "new_project", "expires_s": NONCE_TTL_S, "approves": False,
+            "target": {"host": host["id"], "pane": "", "title": name, "project": "", "status": ""},
+            "lines": [{"k": k, "v": v} for k, v in lines]}
+
+
+def commit_new_project(plan):
+    host = need_host(plan["host"])
+    st = plan["steps"][0]
+    args = ["workspace", "create", "--label", st["label"], "--no-focus"]
+    if st.get("cwd") and os.path.isdir(st["cwd"]):
+        args += ["--cwd", st["cwd"]]
+    try:
+        r = run_herdr(host["machine"], args, timeout=15)
+        pane = r["result"]["root_pane"]["pane_id"]
+        if not PANE_RE.match(pane):
+            raise HerdrError("bad_response", "herdr did not say which terminal the new project got")
+    except (HerdrError, KeyError, TypeError) as e:
+        msg = e.message if isinstance(e, HerdrError) else "herdr's answer was not in the expected shape"
+        audit(plan, False, f"create: {msg}")
+        raise HerdrError(getattr(e, "code", "bad_response"), f"{msg}. Nothing was typed. A failed write may still have landed: look at herdr before trying again.")
+    try:
+        run_herdr(host["machine"], ["pane", "run", pane, st["cmd"]], timeout=10, want_json=False)
+    except HerdrError as e:
+        audit(plan, False, f"run: {e.code}: {e.message}")
+        raise HerdrError(e.code, f"The project {st['label']!r} was created ({pane}) but typing the command failed: {e.message}. Look at that terminal before trying again.")
+    audit(plan, True, "")
+    return {"ok": True, "sent": ["workspace", "run"], "pane": pane}
+
+
 def plan_wake(body):
     """Send one message to each of several SLEEPING (idle or finished) sessions. A blocked session is a question
     waiting on a person, so it is refused here: this can never answer a dialog, let alone approve one."""
@@ -1662,7 +1757,7 @@ class Handler(SimpleHTTPRequestHandler):
                 # The one request every launch makes first: worth a journal line, it is how you see a phone arrive.
                 print(f"shepr: hello from {net} build={(self.headers.get('X-Shepr-Build') or '?')[:12]} ({(self.headers.get('User-Agent') or '')[:70]})", file=sys.stderr, flush=True)
                 return self.json_out(200, {"app": "shepr", "v": 1, "name": LOCAL, "t": time.time(),
-                                           "paired": bool(devices()), "writes": not READONLY, "build": shell_build()})
+                                           "paired": bool(devices()), "writes": not READONLY, "build": shell_build(), "server_build": BOOT_BUILD})
             if u.path == "/api/pair" and post:
                 return self.json_out(200, do_pair(body, self.headers.get("User-Agent")))
 

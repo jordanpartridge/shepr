@@ -541,6 +541,71 @@ const browser = await chromium.launch({ executablePath: '/usr/bin/chromium', arg
     execFileSync('bash', [fsh, 'asleep-rm'], { env: ENV, encoding: 'utf8' });
   }
 
+  // ---- Start new: a brand-new project (name on the title bar, folder under ~/Projects, ccc started). The server runs with
+  // SHEPR_NEW_CMD="echo CCC" and SHEPR_PROJECTS=/tmp/shepr-projects so nothing touches the real ~/Projects.
+  {
+    fs.mkdirSync('/tmp/shepr-projects/exists', { recursive: true });
+    const hr = (...a) => execFileSync('herdr', a, { env: ENV, encoding: 'utf8', input: '' });
+    const wsOf = (label) => JSON.parse(hr('workspace', 'list')).result.workspaces.find((w) => w.label === label);
+    await tap(page, '.tab[data-view=waiting]'); await page.waitForTimeout(500);
+    check('new: a big "Start new" button is the first thing in the queue', await page.evaluate(() => { const b = document.getElementById('newproject');
+      return !!b && b === document.getElementById('main').firstElementChild && b.getBoundingClientRect().height >= 56 && /Start new/.test(b.textContent); }));
+    await page.screenshot({ path: `${OUT}/a4-start-new-button.png` });
+    await page.click('#newproject'); await page.waitForSelector('#np-name');
+    await page.screenshot({ path: `${OUT}/a5-start-new-empty.png` });
+    check('new: Review is off until there is a name and a folder', await page.$eval('#sheet .btns .go', (b) => b.disabled));
+    await page.fill('#np-name', 'Test Project X');
+    check('new: the folder name is suggested from the project name', (await page.inputValue('#np-dir')) === 'test-project-x' && !(await page.$eval('#sheet .btns .go', (b) => b.disabled)));
+    for (const bad of ['../evil', 'a/b', '.hidden', '-x', 'bad name', 'x.']) {
+      await page.fill('#np-dir', bad);
+      if (!(await page.$eval('#sheet .btns .go', (b) => b.disabled))) { check('new: folder ' + JSON.stringify(bad) + ' is refused', false); }
+    }
+    check('new: folders with a slash, a leading dot or dash, a space, or a trailing dot are refused', true);
+    await page.fill('#np-dir', 'exists'); await page.click('#sheet .btns .go'); await page.waitForSelector('#sheet:not([hidden]) .kv');
+    check('new: an existing folder is flagged, and will be reused', /already exists/.test(await page.textContent('#sheet .kv')));
+    await page.click('#sheet .btns button:first-child'); await page.waitForTimeout(300);
+    await page.click('#newproject'); await page.waitForSelector('#np-name');
+    await page.fill('#np-name', 'Test Project X'); await page.click('#sheet .btns .go'); await page.waitForSelector('#sheet:not([hidden]) .kv');
+    const kvn = await page.textContent('#sheet .kv');
+    console.log('   new project plan:', kvn.replace(/\s+/g, ' ').trim().slice(0, 260));
+    check('new: the confirm sheet shows the name, the folder, and the exact command', /Test Project X/.test(kvn) && /\/tmp\/shepr-projects\/test-project-x/.test(kvn) && /will be created/.test(kvn) &&
+      /mkdir -p \/tmp\/shepr-projects\/test-project-x && cd \/tmp\/shepr-projects\/test-project-x && echo CCC/.test(kvn));
+    await page.screenshot({ path: `${OUT}/a6-start-new-confirm.png` });
+    check('new: nothing exists yet', !wsOf('Test Project X') && !fs.existsSync('/tmp/shepr-projects/test-project-x'));
+    await page.waitForTimeout(800); await page.click('#sheet .btns .go');
+    await page.waitForFunction(() => /Created Test Project X/.test(document.body.textContent), null, { timeout: 8000 });
+    let ws = null, pane = '', out = '';
+    for (let i = 0; i < 12 && !(ws && out.includes('CCC')); i++) { await page.waitForTimeout(500); ws = wsOf('Test Project X'); if (ws) { pane = ws.workspace_id + ':p1'; out = hr('pane', 'read', pane, '--lines', '30'); } }
+    check('new: the herdr project exists with the name on its title bar', !!ws);
+    check('new: the folder was created', fs.existsSync('/tmp/shepr-projects/test-project-x'));
+    check('new: the command ran in that terminal, in the new folder', out.includes('CCC') && /shepr-projects\/test-project-x/.test(out));
+    const prep = (body) => page.evaluate(async (b) => { const body = JSON.stringify(Object.assign({ host: window.shepr.S.hello.name, kind: 'new_project' }, b));
+      const r = await fetch('api/send/prepare', { method: 'POST', body, headers: Object.assign({ 'Content-Type': 'application/json', 'X-Shepr': '1' }, await window.shepr.signHeaders('POST', 'api/send/prepare', body)) });
+      return r.status + ' ' + (await r.text()); }, body);
+    const bads = [await prep({ name: 'ok', dir: '../etc' }), await prep({ name: 'ok', dir: 'a/b' }), await prep({ name: 'ok', dir: '.x' }), await prep({ name: 'ok', dir: 'a;rm -rf' }),
+                  await prep({ name: '', dir: 'fine' }), await prep({ name: 'x'.repeat(61), dir: 'fine' }), await prep({ name: 'bad\nname', dir: 'fine' }), await prep({ name: 'ok', dir: '' })];
+    console.log('   refused:', JSON.stringify(bads.map((b) => b.slice(0, 18))));
+    check('new: the server refuses path tricks, empty or oversized names, and newlines on its own', bads.every((b) => /^400 /.test(b) && /bad_dir|bad_name/.test(b)));
+    if (ws) hr('workspace', 'close', ws.workspace_id);
+    fs.rmSync('/tmp/shepr-projects', { recursive: true, force: true });
+  }
+
+  // ---- an app newer than its server: say so plainly instead of a confusing pane error
+  {
+    const prep = (kind) => page.evaluate(async (k) => { const body = JSON.stringify({ host: window.shepr.S.hello.name, kind: k });
+      const r = await fetch('api/send/prepare', { method: 'POST', body, headers: Object.assign({ 'Content-Type': 'application/json', 'X-Shepr': '1' }, await window.shepr.signHeaders('POST', 'api/send/prepare', body)) });
+      return r.status + ' ' + (await r.text()); }, kind);
+    const bogus = await prep('teleport');
+    console.log('   unknown action:', bogus.slice(0, 150));
+    check('skew: an action the server does not know says the server is older, not "not a pane id"', /^400 /.test(bogus) && /older than the app/.test(bogus) && !/pane id/.test(bogus));
+    check('skew: the queue carries the server build, equal to the app build when they match', await page.evaluate(async () => { const q = await window.shepr.S.q; return !!q.server_build && q.server_build === q.build; }));
+    await page.route('**/api/queue*', async (route) => { const res = await route.fetch(); const j = await res.json(); j.server_build = 'v0'; route.fulfill({ response: res, json: j }); });
+    await page.evaluate(() => { window.shepr.S.skewShown = false; });
+    await page.click('#refresh'); await page.waitForTimeout(1200);
+    check('skew: when the host runs an older Shepr than the app, the phone says so, once', /older|Restart Shepr on the host/.test(await page.textContent('body')));
+    await page.unroute('**/api/queue*');
+  }
+
   // ---- swipe left / right in a session to move to the next / previous open project
   {
     await tap(page, '.tab[data-view=waiting]'); await page.waitForTimeout(400);

@@ -100,6 +100,15 @@ never offered as a one-tap chip, and a session sitting at a dialog gets no slash
 A slash command still goes through the preview-and-confirm sheet like any prompt. For a remote host only the built-in
 commands are listed: its skills are not read from here.
 
+### Start new
+
+The big **Start new** button at the top of the Queue makes a brand-new project. It asks for a **project name** (what shows on
+the herdr title bar) and a **folder** under `~/Projects` (suggested from the name, and refused unless it is one plain name: no
+slash, no leading dot or dash). The confirm sheet then shows the name, whether the folder will be created or already exists,
+the exact command, and what the `ccc` alias expands to on this host, and nothing happens until you confirm. Then herdr makes
+the project in the background (it does not take over your screen) and types `mkdir -p ~/Projects/<folder> && cd
+~/Projects/<folder> && ccc` into it. Override the command with `SHEPR_NEW_CMD` and the base folder with `SHEPR_PROJECTS`.
+
 ### Wake a project that is asleep
 
 At the bottom of the Queue, **Asleep (N)** counts herdr projects whose terminal has no Claude or Codex session running. **Wake…**
@@ -209,7 +218,7 @@ typed, no sheet open); inside a session it shows an **Update** button instead. I
 tests/fake-session.sh up                       # isolated herdr session "hrtest" with fake agents
 eval "$(tests/fake-session.sh env)"
 export SHEPR_URL=http://localhost:8743 SHEPR_POLL=3 CLAUDE_HOME=$PWD/tests/fixtures/claude-home   # the UI test expects these fixture skills
-SHEPR_CLAUDE_CMD='echo STARTED' SHEPR_CODEX_CMD='echo CODEX' CODEX_HOME=$PWD/tests/fixtures/codex-home python3 server.py 8743 &   # what is typed when you wake a project: echoes, so tests never start a real agent
+SHEPR_CLAUDE_CMD='echo STARTED' SHEPR_CODEX_CMD='echo CODEX' SHEPR_NEW_CMD='echo CCC' SHEPR_PROJECTS=/tmp/shepr-projects CODEX_HOME=$PWD/tests/fixtures/codex-home python3 server.py 8743 &   # what is typed when you wake a project: echoes, so tests never start a real agent
 node tests/ui.mjs; node tests/sw_offline.mjs; node tests/format.mjs; python3 tests/pair_cli_test.py
 python3 tests/menu_parse_test.py; python3 tests/server_hardening_test.py; python3 tests/history_test.py   # pure Python, no server needed
 node tests/shots.mjs                           # regenerates docs/img/screens.png from the RUNNING app

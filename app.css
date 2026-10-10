@@ -485,3 +485,14 @@ button{font:inherit;color:inherit}
 .hrow.wake .meta{flex:1 1 100%}
 .hrow.wake .sub{white-space:normal;overflow-wrap:anywhere}
 .hrow.wake .mini-btn{flex:1 1 0}
+
+/* Start new: the one big button at the top of the Queue */
+.newbig{display:flex;align-items:center;gap:12px;width:100%;flex:0 0 auto;min-height:60px;padding:0 18px;margin-bottom:6px;border-radius:14px;
+  border:2px solid var(--accent);background:rgba(0,240,255,.14);color:#fff;box-shadow:0 0 22px rgba(0,240,255,.22);text-align:left}
+.newbig:active{background:rgba(0,240,255,.26)}
+.newbig .plus{font-size:34px;line-height:1;font-weight:300;color:var(--accent)}
+.newbig .lbl{font-size:20px;font-weight:800;letter-spacing:.02em}
+.newbig .sub2{margin-left:auto;font-size:14px;color:var(--dim);font-weight:600}
+.npf{margin-bottom:8px}
+.npf .k{font-size:13px;font-weight:700;letter-spacing:.8px;text-transform:uppercase;color:var(--dim);margin:0 2px 4px}
+.npf .search{margin-bottom:0}
