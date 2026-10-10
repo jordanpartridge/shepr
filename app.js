@@ -8,7 +8,7 @@
      3. No timer, retry or "auto" anything ever sends. A failed send is reported, never repeated.
      4. The private key never leaves the phone: it is generated non-extractable and only signs. */
 'use strict';
-const BUILD = 'v24';   // keep equal to sw.js VERSION: shown in Keys and logged by the host, so you can see which app a phone is running
+const BUILD = 'v25';   // keep equal to sw.js VERSION: shown in Keys and logged by the host, so you can see which app a phone is running
 
 // ---------------------------------------------------------------------------
 // 1. Service worker. Without this, a dead tailnet shows Safari's error page and
@@ -306,13 +306,13 @@ const queueList = () => waiting().concat(finished(), working(), sleeping());
 // ---------------------------------------------------------------------------
 const ICON = {
   waiting: '<path d="M6 9a6 6 0 0 1 12 0c0 6 2 7 2 7H4s2-1 2-7"/><path d="M10 19a2 2 0 0 0 4 0"/>',
-  all: '<rect x="3.5" y="3.5" width="7" height="7" rx="2"/><rect x="13.5" y="3.5" width="7" height="7" rx="2"/><rect x="3.5" y="13.5" width="7" height="7" rx="2"/><rect x="13.5" y="13.5" width="7" height="7" rx="2"/>',
+  all: '<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="4.8"/><path d="M12 12 18.4 5.6"/><circle cx="16.2" cy="15.4" r="1.1" fill="currentColor" stroke="none"/>',
   go: '<circle cx="12" cy="12" r="9"/><path d="m15.6 8.4-2.1 5.1-5.1 2.1 2.1-5.1z"/>',
   hosts: '<rect x="3.5" y="4" width="17" height="6.5" rx="2"/><rect x="3.5" y="13.5" width="17" height="6.5" rx="2"/><path d="M7 7.25h.01M7 16.75h.01"/>',
   keys: '<circle cx="8" cy="15.5" r="4"/><path d="m10.9 12.6 8.1-8.1M16 7.5l2.5 2.5M13.4 10.1l1.6 1.6"/>',
 };
 const TABS = [
-  { id: 'waiting', label: 'Queue' }, { id: 'all', label: 'Herd' }, { id: 'go', label: 'Go', action: true },
+  { id: 'waiting', label: 'Queue' }, { id: 'all', label: 'Radar' }, { id: 'go', label: 'Go', action: true },
   { id: 'hosts', label: 'Hosts' }, { id: 'keys', label: 'Keys' },
 ];
 function buildTabs() {
@@ -476,18 +476,7 @@ function paintMain() {
       m.append(h);
     }
   } else if (S.tab === 'all') {
-    const list = agents().filter(inHost);
-    let lastHost = null, i = 0;
-    const view = store.get('shepr.herdview', 'list') === 'radar' ? 'radar' : 'list';
-    const seg = el('div', 'seg'); seg.id = 'herdseg';
-    [['list', 'List'], ['radar', 'Radar']].forEach(([v, name]) => { const b = btn(name, 'mini-btn' + (v === view ? ' on' : ''), () => { store.set('shepr.herdview', v); paintMain(); }); b.dataset.v = v; seg.append(b); });
-    m.append(seg);
-    if (view === 'radar') { m.append(radarNode(list)); return finishMain(m, keep); }
-    if (!list.length) m.append(el('div', 'empty', 'No sessions.'));
-    list.slice().sort((a, b) => a.host.localeCompare(b.host) || nm(a).localeCompare(nm(b))).forEach((a) => {
-      if (a.host !== lastHost) { m.append(section(a.host)); lastHost = a.host; }
-      m.append(itemNode(a, 'all', true, i++));
-    });
+    m.append(radarNode(agents().filter(inHost)));   // the Queue already lists every session by state; this shows the fleet at a glance
   } else if (S.tab === 'hosts') {
     paintHostsView(m);
   } else {
@@ -581,7 +570,6 @@ function radarNode(list) {
   if (!list.length) wrap.append(el('div', 'empty', 'No sessions.'));
   return wrap;
 }
-const finishMain = (m, keep) => { m.scrollTop = keep; };
 
 // ---- the waiting ledger: how long agents sat blocked on you. A slim strip under Start new, and a sheet with the detail.
 const fmtDur = (s) => { s = Math.round(s); if (s < 60) return '<1m'; const m = Math.floor(s / 60); return m < 60 ? m + 'm' : Math.floor(m / 60) + 'h ' + String(m % 60).padStart(2, '0') + 'm'; };

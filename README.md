@@ -55,7 +55,7 @@ On the iPhone, in **Safari**: open `https://<this-host>.<your-tailnet>.ts.net:87
 | Tab | What |
 |---|---|
 | **Queue** | Everything, in the order that matters: **Needs you** (longest blocked first), **Finished**, **Working**, then **Sleeping** last (with a **Wake…** button). Sessions are named after your herdr workspace ("Shepr"), falling back to the project directory. Badge shows what needs you. | It refreshes itself every 10 s while the app is open and the moment you come back to it; pull down from the top of any list to refresh on demand.
-| **Herd** | Every session on every host, grouped by host. |
+| **Radar** | Every session on every host as a radar (below). |
 | **Go** | Search every session by project, session title or host. Waiting first, then recent. |
 | **Hosts** | Hosts herdr can reach (turn saved ones on or off) and a tailnet scan for more. |
 | **Keys** | This phone's key, the phones the host trusts (revoke), pair another, **Top spacing**, and the app build (`Shepr v8`) so you can tell which version a phone is running. |
@@ -144,7 +144,7 @@ ended while it was not watching, is left out), one per blocked state, so a multi
 
 ### Fleet radar
 
-**Herd > Radar** is the same sessions as a radar. The centre is "needs you"; the rings run outward: waiting, finished, working,
+The **Radar** tab shows every session as a radar. The centre is "needs you"; the rings run outward: waiting, finished, working,
 idle. Each host has its own sector. Waiting dots pulse, swell the longer they wait, and carry the project name. Tap a dot to open
 that session. With the iPhone's Reduce Motion on, the sweep and the pulses stand still.
 

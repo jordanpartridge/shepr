@@ -683,11 +683,10 @@ const browser = await chromium.launch({ executablePath: '/usr/bin/chromium', arg
     await page.unroute('**/api/ledger*');
   }
 
-  // ---- the fleet radar (Herd tab, Radar view)
+  // ---- the Radar tab (it replaced the Herd list, which was only the Queue again in alphabetical order)
   {
-    await tap(page, '.tab[data-view=all]'); await page.waitForTimeout(500);
-    check('radar: the Herd tab has a List / Radar switch, List by default', (await page.$$eval('#herdseg .mini-btn', (b) => b.map((x) => x.textContent + (x.classList.contains('on') ? '*' : '')))).join() === 'List*,Radar');
-    await page.click('#herdseg .mini-btn[data-v=radar]'); await page.waitForSelector('svg.radar');
+    await tap(page, '.tab[data-view=all]'); await page.waitForSelector('svg.radar'); await page.waitForTimeout(400);
+    check('radar: the tab is called Radar and shows the radar straight away, with no list behind it', (await page.textContent('.tab[data-view=all]')).trim() === 'Radar' && (await page.$$('#main .item')).length === 0 && (await page.$('#herdseg')) === null);
     const want = await page.evaluate(() => ({ all: window.shepr.S.q.agents.length, blocked: window.shepr.S.q.agents.filter((a) => a.status === 'blocked').length, working: window.shepr.S.q.agents.filter((a) => a.status === 'working').length }));
     const got = await page.evaluate(() => ({ dots: document.querySelectorAll('.radar .rdot').length, blocked: document.querySelectorAll('.radar .rdot.blocked').length, pulses: document.querySelectorAll('.radar .rdot.blocked .rpulse').length,
       working: document.querySelectorAll('.radar .rdot.working').length, centre: document.querySelector('.radar .rnum').textContent, hosts: [...document.querySelectorAll('.radar .rhost')].map((t) => t.textContent) }));
@@ -700,12 +699,10 @@ const browser = await chromium.launch({ executablePath: '/usr/bin/chromium', arg
     await tap(page, '.radar .rdot.blocked'); await page.waitForSelector('#detail:not([hidden])', { timeout: 5000 });
     check('radar: tapping a dot opens that session', (await page.textContent('#dtitle')).length > 0);
     await page.click('#dback').catch(() => {}); await page.waitForTimeout(400);
-    check('radar: the choice is remembered', (await page.evaluate(() => localStorage.getItem('shepr.herdview'))) === '"radar"' || (await page.evaluate(() => localStorage.getItem('shepr.herdview'))) === 'radar');
     await page.emulateMedia({ reducedMotion: 'reduce' }); await page.waitForTimeout(200);
     check('radar: with reduced motion on, the sweep and the pulses are still', await page.evaluate(() => getComputedStyle(document.querySelector('.radar .rsweep')).animationName === 'none' && getComputedStyle(document.querySelector('.radar .rpulse')).animationName === 'none'));
     await page.emulateMedia({ reducedMotion: 'no-preference' });
-    await page.click('#herdseg .mini-btn[data-v=list]'); await page.waitForTimeout(300);
-    check('radar: switching back to List shows the list again', (await page.$$('#main .item')).length >= 3);
+    check('radar: the tab bar has five tabs and the radar tab has its own icon', (await page.$$('.tab')).length === 5 && (await page.$$eval('.tab[data-view=all] svg circle', (c) => c.length)) >= 2);
     await tap(page, '.tab[data-view=waiting]'); await page.waitForTimeout(300);
   }
 
