@@ -661,7 +661,7 @@ def build_plan(body):
         raise HerdrError("bad_kind", "kind must be text, keys, choose or multi")
 
     plan = {
-        "nonce": secrets.token_urlsafe(18), "host": host["id"], "pane": pane, "kind": kind, "steps": steps,
+        "nonce": secrets.token_urlsafe(18), "host": host["id"], "pane": pane, "kind": kind, "steps": steps, "made": time.time(),
         "snap": {"status": status, "seq": a.get("state_change_seq"),
                  "session": (a.get("agent_session") or {}).get("value")},
         "expires": time.time() + NONCE_TTL_S,
@@ -697,7 +697,7 @@ def run_step(host, pane, step):
 
 
 PANE_LOCKS = {}
-LAST_SENT = {}   # (host, pane) -> state_change_seq of the blocked dialog that was last answered from here
+LAST_SENT = {}   # (host, pane) -> time of the last answer sent to that terminal from here
 
 
 def pane_lock(host_id, pane):
@@ -730,8 +730,11 @@ def _commit_pane_plan(host, plan):
     if (a["agent_status"], a.get("state_change_seq"), (a.get("agent_session") or {}).get("value")) != \
             (snap["status"], snap["seq"], snap["session"]):
         raise HerdrError("moved_on", "the agent changed state since you looked, so nothing was sent. Read it again.")
-    if snap["status"] == "blocked" and snap["seq"] is not None and LAST_SENT.get(key) == snap["seq"]:
-        raise HerdrError("moved_on", "that dialog was already answered a moment ago, so nothing was sent.")
+    # A preview made BEFORE the last answer to this terminal is dead: its screen is gone. A preview made AFTER it is fine,
+    # even though herdr's state counter has not moved (a multi-step dialog, such as ticks then Review then Submit, is ONE
+    # blocked state, so the counter cannot be what tells the steps apart).
+    if snap["status"] == "blocked" and LAST_SENT.get(key, 0) >= plan.get("made", 0):
+        raise HerdrError("moved_on", "another answer was sent to this terminal after you looked at it, so nothing was sent. Look again.")
     if plan["kind"] == "multi":
         menu = parse_menu(read_tail(host, plan["pane"], 80))
         now = menu and menu.get("multi") and [[o["n"], o["label"], o["checked"]] for o in menu["options"]] + [menu["cur_idx"], menu["action"]["idx"]]
@@ -767,7 +770,7 @@ def _commit_pane_plan(host, plan):
             raise HerdrError(e.code, f"{e.message}. Sent before the failure: {', '.join(done) or 'nothing'}. "
                                      "A failed write may still have landed: read the pane before trying again.")
     if snap["status"] == "blocked":
-        LAST_SENT[key] = snap["seq"]
+        LAST_SENT[key] = time.time()
         with LOCK:   # any other preview made against this same dialog is dead now
             for k in [k for k, p in PLANS.items() if (p.get("host"), p.get("pane")) == key]:
                 del PLANS[k]

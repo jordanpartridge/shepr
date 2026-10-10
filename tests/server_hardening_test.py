@@ -46,7 +46,7 @@ srv.get_agent = lambda host, pane: {"agent_status": "blocked", "state_change_seq
 srv.run_step = lambda host, pane, step: (time.sleep(0.2), sent.append(step["keys"]))
 def mkplan(n):
     p = {"nonce": f"n{n}", "host": "gus", "pane": "w1:p1", "kind": "keys", "steps": [{"op": "keys", "keys": ["enter"]}],
-         "snap": {"status": "blocked", "seq": 7, "session": "s1"}, "expires": time.time() + 60}
+         "snap": {"status": "blocked", "seq": 7, "session": "s1"}, "expires": time.time() + 60, "made": time.time()}
     srv.PLANS[p["nonce"]] = p
 for n in (1, 2): mkplan(n)
 out = []
@@ -57,6 +57,24 @@ ts = [threading.Thread(target=commit, args=(n,)) for n in (1, 2)]
 [t.start() for t in ts]; [t.join() for t in ts]
 check("commit: two previews of one dialog dispatch exactly once", len(sent) == 1)
 check("commit: the other one is refused as moved_on", sorted(map(str, out)) == ["True", "moved_on"])
+
+# ---- a multi-step dialog is ONE blocked state: ticks, then Review, then Submit all share herdr's counter (seq 7).
+# A preview made AFTER the previous answer must work; only a preview made BEFORE it is dead. (Regression: Fred's phone could
+# not press "Submit answers" on the Review screen because the whole state counted as "already answered".)
+sent.clear()
+time.sleep(0.05); mkplan(3)                      # made after the answer above, same seq 7
+out3 = []
+try: out3.append(srv.commit_plan("n3")["ok"])
+except srv.HerdrError as e: out3.append(e.code)
+check("multi-step: a fresh preview after an answer is accepted although the state counter has not moved", out3 == [True] and len(sent) == 1)
+time.sleep(0.05); mkplan(4); mkplan(5)           # two phones look at the Review screen together
+out45 = []
+def c45(n):
+    try: out45.append(srv.commit_plan(f"n{n}")["ok"])
+    except srv.HerdrError as e: out45.append(e.code)
+ts = [threading.Thread(target=c45, args=(n,)) for n in (4, 5)]
+[t.start() for t in ts]; [t.join() for t in ts]
+check("multi-step: two phones on the same Review screen still answer it only once", sorted(map(str, out45)) == ["True", "moved_on"])
 
 # ---- a runaway child is cut off at the byte cap
 srv.MAX_OUT = 1 << 20

@@ -8,7 +8,7 @@
      3. No timer, retry or "auto" anything ever sends. A failed send is reported, never repeated.
      4. The private key never leaves the phone: it is generated non-extractable and only signs. */
 'use strict';
-const BUILD = 'v20';   // keep equal to sw.js VERSION: shown in Keys and logged by the host, so you can see which app a phone is running
+const BUILD = 'v21';   // keep equal to sw.js VERSION: shown in Keys and logged by the host, so you can see which app a phone is running
 
 // ---------------------------------------------------------------------------
 // 1. Service worker. Without this, a dead tailnet shows Safari's error page and
