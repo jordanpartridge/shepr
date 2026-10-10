@@ -193,6 +193,23 @@ button{font:inherit;color:inherit}
 .chips span{font-size:.72em;line-height:1.35;color:#9fb0c4;background:#0b1622;border:1px solid var(--line);
   border-radius:7px;padding:2px 8px;overflow-wrap:anywhere}
 .tail .sel{color:var(--accent)}
+.tail{overflow-anchor:none}
+.hmark{text-align:center;color:var(--dim);font-size:.75em;margin:0}
+.hmark:not(:empty){margin:4px 0 14px}
+.hnow{display:flex;align-items:center;gap:10px;margin:14px 0 10px;font-size:.66em;letter-spacing:.18em;color:var(--dim);font-weight:700;text-transform:uppercase}
+.hnow::before,.hnow::after{content:"";flex:1 1 auto;height:1px;background:var(--line)}
+.hnow[hidden]{display:none}
+.hent{margin:10px 0}
+.h-user{border-left:3px solid var(--accent);padding-left:10px;color:#fff}
+.h-assistant{border-left:3px solid #2a3a50;padding-left:10px}
+.hwho{font-size:.66em;letter-spacing:.12em;color:var(--dim);font-weight:700;margin-bottom:2px}
+.hbody{white-space:pre-wrap;overflow-wrap:anywhere}
+.h-tool,.h-result,.hpane{font:.8em/1.4 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;white-space:pre-wrap;overflow-wrap:anywhere}
+.h-tool{color:#c9a24a;margin:6px 0 2px}
+.h-result{color:#6f8196;padding-left:10px;border-left:1px solid var(--line);margin:2px 0 8px}
+.h-result.err{color:var(--hot)}
+.hpane{color:#c4d1de}
+.h-divider{text-align:center;font-size:.75em;color:var(--dim);border-top:1px dashed var(--line);padding-top:6px;margin:16px 0}
 
 .toast{animation:pop .35s cubic-bezier(.3,1.5,.5,1);flex:0 0 auto;display:flex;align-items:center;gap:10px;padding:8px 14px;font-size:15.5px;
   background:#0f2a1a;color:var(--ok);border-top:1px solid #1d4a2c}

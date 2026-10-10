@@ -78,6 +78,14 @@ compact strip of chips: model, context, banked / weekly subscription, 5h window,
 the rest behind one **+N** tap. **A−** / **A+** change the size (it remembers). Text only ever goes through `textContent`: whatever an
 agent prints is data, never markup.
 
+**The whole session is one scroll.** Under the live text, above a quiet "now" line, sits the entire conversation: just scroll
+up and keep going, as far back as the first message. herdr only keeps about 1,000 lines, so for Claude sessions on the
+host this reads the transcript file instead, a page at a time from the newest end (50 MB is fine), and adds each older
+page above what you are reading without moving it. What the live text already shows is hidden from the history so nothing
+appears twice, and new activity is pulled in as the session grows so there is never a gap. Tool calls show as one line,
+tool results are cut to the first 700 characters, thinking is left out. Other hosts and other agents (not Claude) fall back
+to the ~1,000 lines herdr keeps, and the top of the scroll says so.
+
 ### Skills and slash commands
 
 In a session, tap **/** next to the message box (or just type `/`): a row shows the **last 6 skills and commands you
@@ -189,7 +197,7 @@ eval "$(tests/fake-session.sh env)"
 export SHEPR_URL=http://localhost:8743 SHEPR_POLL=3 CLAUDE_HOME=$PWD/tests/fixtures/claude-home   # the UI test expects these fixture skills
 python3 server.py 8743 &
 node tests/ui.mjs; node tests/sw_offline.mjs; node tests/format.mjs; python3 tests/pair_cli_test.py
-python3 tests/menu_parse_test.py; python3 tests/server_hardening_test.py   # pure Python, no server needed
+python3 tests/menu_parse_test.py; python3 tests/server_hardening_test.py; python3 tests/history_test.py   # pure Python, no server needed
 node tests/shots.mjs                           # regenerates docs/img/screens.png from the RUNNING app
 tests/fake-session.sh down
 ```

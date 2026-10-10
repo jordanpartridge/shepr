@@ -8,7 +8,7 @@
      3. No timer, retry or "auto" anything ever sends. A failed send is reported, never repeated.
      4. The private key never leaves the phone: it is generated non-extractable and only signs. */
 'use strict';
-const BUILD = 'v15';   // keep equal to sw.js VERSION: shown in Keys and logged by the host, so you can see which app a phone is running
+const BUILD = 'v16';   // keep equal to sw.js VERSION: shown in Keys and logged by the host, so you can see which app a phone is running
 
 // ---------------------------------------------------------------------------
 // 1. Service worker. Without this, a dead tailnet shows Safari's error page and
@@ -848,7 +848,7 @@ function openDetail(host, pane, ctx) {
   const k = host + '|' + pane;
   if (S.cur && (S.cur.host + '|' + S.cur.pane) !== k) S.prevKey = S.cur.host + '|' + S.cur.pane;
   S.cur = { host, pane }; S.ctx = ctx || S.ctx;
-  S.tailText = null; S.menu = null; S.agent = null; S.keybuf = []; S.selSig = null;
+  S.tailText = null; S.menu = null; S.agent = null; S.keybuf = []; S.selSig = null; S.hist = null;
   const rec = store.get('shepr.recent', []).filter((x) => x !== k);
   rec.unshift(k); store.set('shepr.recent', rec.slice(0, 12));
   try { history.replaceState(null, '', '#' + encodeURIComponent(host) + '/' + encodeURIComponent(pane)); } catch (e) { /* ignore */ }
@@ -917,7 +917,7 @@ gesture($('dprev'), { tap: () => stepTo(-1), long: () => stepTo(0, 'first') });
 gesture($('dnext'), { tap: () => stepTo(1), long: () => stepTo(0, 'last') });
 gesture($('dhead'), { tap: () => openGoTo(''), dbl: nextWaiting, long: flipPrevious });
 $('dback').addEventListener('click', closeDetail);
-$('drefresh').addEventListener('click', () => loadTail(true));
+$('drefresh').addEventListener('click', () => { loadTail(true); if (S.hist) scheduleSync(); });
 
 // Session text size: big by default (it is the thing you read), A- / A+ to taste, remembered.
 // Top spacing: the phone's safe-area inset is the right number when iOS reports it, but a Home Screen app has
@@ -1024,7 +1024,7 @@ function renderBlocks(box, text) {
 function renderTail(text) {
   const t = $('tail');
   const near = t.scrollHeight - t.scrollTop - t.clientHeight < 60;
-  renderBlocks(t, text);
+  renderBlocks(tailDom(), text);
   return near;
 }
 
@@ -1043,6 +1043,7 @@ function loadTail(force) {
         const stick = renderTail(r.text);
         S.tailText = r.text;
         if (first || force || stick) $('tail').scrollTop = $('tail').scrollHeight;
+        if (!S.hist) startHistory(); else scheduleSync();
       }
       $('dtime').textContent = clock(r.at);
       paintDock(); paintDetailChrome();
@@ -1056,6 +1057,136 @@ function loadTail(force) {
     .finally(() => { tailBusy = false; });
 }
 setInterval(() => { if (S.cur && !S.sheetOpen && !document.hidden) loadTail(); }, 6000);
+
+// ---- the whole session, one scroll. The live text stays at the bottom exactly as before; ABOVE it sits the entire
+// conversation. herdr keeps ~1,000 lines, the Claude transcript keeps everything, so the host serves it a page at a time
+// (newest first) and each older page is added above what you are reading, without moving it.
+const alnum = (s) => (s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+const stamp = (ts) => { const d = new Date(ts); return isNaN(d) ? '' : d.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }); };
+const sigOf = (e) => e.r + '|' + (e.ts || '') + '|' + (e.x || '').slice(0, 60);
+function histNode(e) {
+  const n = el('div', 'hent h-' + e.r + (e.err ? ' err' : ''));
+  if (e.r === 'user' || e.r === 'assistant') {
+    const body = el('div', 'hbody'); body.textContent = e.x;   // DATA: text only
+    n.append(el('div', 'hwho', (e.r === 'user' ? 'YOU' : 'CLAUDE') + (e.ts ? '   ' + stamp(e.ts) : '')), body);
+  } else n.textContent = e.x;
+  return n;
+}
+// The scroll box holds, top to bottom: a status line, the history, a "now" rule, and the live text.
+function tailDom() {
+  const t = $('tail');
+  let live = $('live');
+  if (!live || live.parentNode !== t) {
+    t.textContent = '';
+    S.hist = null;   // the box was (re)built empty, so whatever history state existed no longer matches the page
+    const mark = el('div', 'hmark'); mark.id = 'hmark';
+    const hist = el('div'); hist.id = 'hist';
+    const now = el('div', 'hnow', 'now'); now.id = 'hnow'; now.hidden = true;
+    live = el('div'); live.id = 'live';
+    t.append(mark, hist, now, live);
+  }
+  return live;
+}
+// The newest entries are what the live text below already shows. Find where they start so nothing appears twice.
+function liveCut(entries) {
+  const pane = alnum(S.tailText);
+  let cut = entries.length, gap = 0, found = false;
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const k = alnum(entries[i].x).slice(0, 40);
+    if (k.length >= 20 && pane.includes(k)) { cut = i; found = true; gap = 0; } else if (++gap > (found ? 6 : 12)) break;
+  }
+  return cut;
+}
+// Add nodes above or below the history without moving what you are looking at.
+function histInsert(nodes, atTop) {
+  const t = $('tail'), hist = $('hist');
+  const prevH = t.scrollHeight, prevTop = t.scrollTop, histBottom = hist.offsetTop + hist.offsetHeight;
+  const near = prevH - prevTop - t.clientHeight < 60;
+  const frag = document.createDocumentFragment(); nodes.forEach((n) => frag.append(n));
+  if (atTop) hist.prepend(frag); else hist.append(frag);
+  $('hnow').hidden = !hist.firstChild;
+  if (atTop || prevTop >= histBottom - 5) t.scrollTop = prevTop + (t.scrollHeight - prevH);   // you were below the change: stay put
+  if (!atTop && near) t.scrollTop = t.scrollHeight;
+}
+function startHistory() {
+  if (!S.cur || S.hist) return;
+  S.hist = { before: null, done: false, loading: false, mode: null, lastSig: null, syncing: false, at: S.cur };
+  loadOlder(true);
+}
+function loadOlder(first) {
+  const h = S.hist;
+  if (!h || h.loading || h.done) return;
+  h.loading = true;
+  const at = h.at, mark = $('hmark');
+  api('api/history?host=' + encodeURIComponent(at.host) + '&pane=' + encodeURIComponent(at.pane) + (h.before != null ? '&before=' + h.before : ''))
+    .then((r) => {
+      if (S.hist !== h) return;   // you moved to another session
+      h.loading = false;
+      if (r.source === 'pane') {
+        h.mode = 'pane'; h.done = true;
+        paintPaneHistory(r.text);
+        mark.textContent = r.note || 'start of what herdr keeps';
+      } else {
+        h.mode = 'transcript';
+        let es = r.entries;
+        if (first) { es = es.slice(0, liveCut(es)); }
+        if (first && es.length) h.lastSig = sigOf(es[es.length - 1]);
+        histInsert(es.map(histNode), !first);
+        h.before = r.before; h.done = r.before == null;
+        mark.textContent = h.done ? 'start of this session' + (r.note ? ' (' + r.note + ')' : '') : '';
+        if (first && !es.length && !h.done) { h.mode = 'transcript'; }
+      }
+      const t = $('tail');
+      if (!h.done && t.scrollHeight <= t.clientHeight + 300) loadOlder(false);   // a short page: fetch the next straight away
+    })
+    .catch((e) => {
+      if (S.hist !== h) return;
+      h.loading = false;
+      mark.textContent = 'Could not load older history: ' + e.message + '. Tap here to retry.';
+      mark.onclick = () => { mark.onclick = null; mark.textContent = ''; loadOlder(first); };
+    });
+}
+// No transcript (another host, or an agent that is not Claude): the ~1,000 lines herdr keeps, minus the last 40 the live text shows.
+function paintPaneHistory(text) {
+  const t = $('tail'), hist = $('hist');
+  const prevH = t.scrollHeight, prevTop = t.scrollTop, histBottom = hist.offsetTop + hist.offsetHeight;
+  const lines = text.split('\n');
+  const box = el('div', 'hpane');
+  renderBlocks(box, lines.slice(0, Math.max(0, lines.length - 40)).join('\n'));
+  hist.textContent = ''; hist.append(box);
+  $('hnow').hidden = !box.firstChild;
+  if (prevTop >= histBottom - 5 || prevH - prevTop - t.clientHeight < 60) t.scrollTop = prevTop + (t.scrollHeight - prevH);
+}
+// The session keeps growing while you read it: pull in what is new so there is never a gap above the live text.
+let syncTimer = null;
+function scheduleSync() { clearTimeout(syncTimer); syncTimer = setTimeout(syncHistory, 1500); }
+function syncHistory() {
+  const h = S.hist;
+  if (!h || !h.mode || h.syncing || h.loading) return;
+  h.syncing = true;
+  const at = h.at;
+  api('api/history?host=' + encodeURIComponent(at.host) + '&pane=' + encodeURIComponent(at.pane))
+    .then((r) => {
+      if (S.hist !== h) return;
+      if (r.source === 'pane') { paintPaneHistory(r.text); return; }
+      const es = r.entries;
+      let idx = -1;
+      if (h.lastSig) for (let i = es.length - 1; i >= 0; i--) { if (sigOf(es[i]) === h.lastSig) { idx = i; break; } }
+      const fresh = es.slice(idx + 1);
+      const add = fresh.slice(0, liveCut(fresh));
+      if (!add.length) return;
+      const nodes = add.map(histNode);
+      if (h.lastSig && idx < 0) nodes.unshift(el('div', 'hent h-divider', 'earlier entries are not shown here'));
+      histInsert(nodes, false);
+      h.lastSig = sigOf(add[add.length - 1]);
+    })
+    .catch(() => { /* the next change tries again */ })
+    .finally(() => { h.syncing = false; });
+}
+$('tail').addEventListener('scroll', () => {
+  const h = S.hist;
+  if (h && !h.done && !h.loading && h.mode && $('tail').scrollTop < 700) loadOlder(false);
+}, { passive: true });
 
 // ---- dock: options, keys, compose
 const KEYS = [['↑', 'up'], ['↓', 'down'], ['⏎', 'enter'], ['Esc', 'esc'], ['Tab', 'tab'], ['␣', 'space']];
@@ -1436,4 +1567,4 @@ async function boot() {
   hideSplash(false);
 }
 boot();
-window.shepr = { S, ping, standalone, signHeaders, renderBlocks, appIsStale, BUILD };
+window.shepr = { S, ping, standalone, signHeaders, renderBlocks, appIsStale, BUILD, liveCut, syncHistory };

@@ -158,13 +158,13 @@ def clean_text(s):
     return CTRL_RE.sub("", ANSI_RE.sub("", s)).replace("\r", "")
 
 
-def read_tail(host, pane, lines):
+def read_tail(host, pane, lines, max_bytes=TAIL_MAX_BYTES):
     out = run_herdr(host["machine"], ["agent", "read", pane, "--source", "recent-unwrapped",
-                                      "--lines", str(lines)], timeout=10, want_json=False)
+                                      "--lines", str(lines)], timeout=10 if lines <= 200 else 20, want_json=False)
     text = clean_text(out).rstrip()
     ls = text.split("\n")[-lines:]
     text = "\n".join(l[:600] for l in ls)
-    return text[-TAIL_MAX_BYTES:]
+    return text[-max_bytes:]
 
 
 def get_agent(host, pane):
@@ -201,21 +201,133 @@ def save_state(d):
 STATE = load_state()
 
 
-def transcript_mtime(agent):
-    """Local Claude only: the session transcript stops being written the moment the agent blocks,
-    so its mtime is a good estimate of WHEN it blocked for a session that was already blocked
-    before we started watching. Returns None if it cannot be found."""
+def transcript_file(agent):
+    """Local Claude only: the path of this session's transcript (every message ever, unlike the ~1000 lines
+    herdr keeps), or None. The session id comes from herdr but only ever picks a file under CLAUDE_HOME/projects."""
     sess = agent.get("agent_session") or {}
     sid = sess.get("value")
-    if sess.get("agent") != "claude" or sess.get("kind") != "id" or not sid or "/" in sid:
+    if sess.get("agent") != "claude" or sess.get("kind") != "id" or not sid or not re.fullmatch(r"[0-9A-Za-z._-]+", sid):
         return None
     for cwd in (agent.get("cwd"), agent.get("foreground_cwd")):
         if cwd:
             p = os.path.join(CLAUDE_HOME, "projects", re.sub(r"[^A-Za-z0-9]", "-", cwd), sid + ".jsonl")
             if os.path.exists(p):
-                return os.path.getmtime(p)
+                return p
     hits = glob.glob(os.path.join(CLAUDE_HOME, "projects", "*", sid + ".jsonl"))
-    return os.path.getmtime(hits[0]) if hits else None
+    return hits[0] if hits else None
+
+
+def transcript_mtime(agent):
+    """The session transcript stops being written the moment the agent blocks, so its mtime is a good
+    estimate of WHEN it blocked for a session that was already blocked before we started watching."""
+    p = transcript_file(agent)
+    return os.path.getmtime(p) if p else None
+
+
+# --------------------------------------------------------------------------------------------
+# full history: the transcript, read BACKWARDS a page at a time, so a 50 MB session scrolls forever
+# --------------------------------------------------------------------------------------------
+HIST_ENTRIES = 80            # rendered entries per page (a page holds fewer if it hits the scan cap)
+HIST_SCAN = 8 << 20          # most bytes read for one page
+HIST_LINE = 8 << 20          # a single transcript line larger than this is not shown
+SKIP_TEXT = ("<system-reminder>", "<command-name>", "<command-message>", "<local-command", "<user-prompt-submit-hook>")
+
+
+def _clip(text, n):
+    text = text.strip("\n")
+    return text if len(text) <= n else text[:n] + f"\n… ({len(text) - n} more characters)"
+
+
+def _tool_line(b):
+    name, inp = b.get("name") or "tool", b.get("input") or {}
+    if not isinstance(inp, dict):
+        inp = {}
+    arg = inp.get("command") or inp.get("file_path") or inp.get("path") or inp.get("pattern") or inp.get("url") \
+        or inp.get("query") or inp.get("description") or inp.get("prompt") or ""
+    if not arg and inp:
+        arg = json.dumps(inp, ensure_ascii=False)
+    return f"{name}({_clip(str(arg), 400)})"
+
+
+def _result_text(b):
+    c = b.get("content")
+    if isinstance(c, str):
+        return c
+    if isinstance(c, list):
+        return "\n".join((x.get("text") or "[image]") if isinstance(x, dict) else str(x) for x in c)
+    return ""
+
+
+def render_line(raw):
+    """One transcript line -> the entries worth reading (message text, tool calls, short tool results)."""
+    try:
+        d = json.loads(raw)
+    except ValueError:
+        return []
+    if not isinstance(d, dict):
+        return []
+    t, ts = d.get("type"), d.get("timestamp")
+    if t == "system":
+        return [{"ts": ts, "r": "divider", "x": "the conversation was compacted here"}] if d.get("subtype") == "compact_boundary" else []
+    if t not in ("user", "assistant") or d.get("isMeta") or d.get("isSidechain"):
+        return []
+    c = (d.get("message") or {}).get("content")
+    blocks = [{"type": "text", "text": c}] if isinstance(c, str) else [b for b in c if isinstance(b, dict)] if isinstance(c, list) else []
+    out = []
+    for b in blocks:
+        bt = b.get("type")
+        if bt == "text":
+            txt = b.get("text") or ""
+            if not txt.strip() or (t == "user" and txt.lstrip().startswith(SKIP_TEXT)):
+                continue
+            out.append({"ts": ts, "r": "user" if t == "user" else "assistant", "x": _clip(txt, 12000)})
+        elif bt == "tool_use":
+            out.append({"ts": ts, "r": "tool", "x": _tool_line(b)})
+        elif bt == "tool_result":
+            out.append({"ts": ts, "r": "result", "x": _clip(_result_text(b), 700), "err": bool(b.get("is_error"))})
+        elif bt == "image":
+            out.append({"ts": ts, "r": "result", "x": "[image]"})
+    return out
+
+
+def history_page(path, before):
+    """The page of transcript that ENDS at byte offset `before` (None = the end of the file).
+    Returns (entries oldest-first, offset to ask for next or None at the start of the file, file size, note)."""
+    size = os.path.getsize(path)
+    end = size if before is None else max(0, min(int(before), size))
+    pos, scanned, carry = end, 0, b""
+    got, oldest, note = [], end, None
+    with open(path, "rb") as f:
+        while pos > 0 and len(got) < HIST_ENTRIES and scanned < HIST_SCAN:
+            step = min(256 * 1024, pos)
+            pos -= step
+            f.seek(pos)
+            chunk = f.read(step) + carry
+            scanned += step
+            parts = chunk.split(b"\n")
+            if pos > 0:                      # the first piece is the tail of a line that began earlier
+                carry, parts, off = parts[0], parts[1:], pos + len(parts[0]) + 1
+                if len(carry) > HIST_LINE:
+                    note, oldest, carry = "an entry too large to show was skipped here", 0, b""
+                    break
+            else:
+                carry, off = b"", 0
+            starts = []
+            for part in parts:
+                starts.append(off)
+                off += len(part) + 1
+            stop = False
+            for part, st in zip(reversed(parts), reversed(starts)):
+                if part.strip():
+                    got.extend(reversed(render_line(part)))   # newest-first while scanning
+                oldest = st
+                if len(got) >= HIST_ENTRIES:
+                    stop = True
+                    break
+            if stop:
+                break
+    got.reverse()
+    return got, (oldest if oldest > 0 else None), size, note
 
 
 def note_seen(host, agents, now):
@@ -1402,6 +1514,26 @@ class Handler(SimpleHTTPRequestHandler):
                 return self.json_out(200, {"text": text, "lines": n, "menu": parse_menu(read_tail(host, pane, 80))
                                            if a["agent_status"] == "blocked" else None,
                                            "agent": shape_agent(host, a, {}), "at": time.time()})
+            if not post and u.path == "/api/history":
+                host = need_host(q.get("host", ""))
+                pane = q.get("pane", "")
+                if not PANE_RE.match(pane):
+                    raise HerdrError("bad_pane", "not a pane id")
+                a = get_agent(host, pane)
+                tf = transcript_file(a) if host["kind"] == "local" else None
+                if tf:
+                    try:
+                        before = int(q["before"]) if q.get("before") not in (None, "") else None
+                    except ValueError:
+                        raise HerdrError("bad_request", "before must be a number")
+                    entries, nxt, size, note = history_page(tf, before)
+                    return self.json_out(200, {"source": "transcript", "entries": entries, "before": nxt, "size": size,
+                                               "note": note, "at": time.time()})
+                # No transcript to read (another host, or an agent that is not Claude): the most herdr keeps.
+                text = read_tail(host, pane, 1000, max_bytes=600 * 1024)
+                return self.json_out(200, {"source": "pane", "text": text, "entries": [], "before": None, "at": time.time(),
+                                           "note": "the full history is only available for Claude sessions on this host; "
+                                                   "this is the most herdr keeps (about 1,000 lines)"})
             if not post and u.path == "/api/commands":
                 return self.json_out(200, commands_view(need_host(q.get("host", ""))))
             if not post and u.path == "/api/hosts":

@@ -330,6 +330,67 @@ const browser = await chromium.launch({ executablePath: '/usr/bin/chromium', arg
     execFileSync('bash', [fs_, 'multi-rm'], { env: ENV, encoding: 'utf8' });
   }
 
+  // ---- the whole session in ONE scroll (the host's /api/history is stubbed: this tests the PAGE)
+  {
+    const mk = (n, count = 40) => Array.from({ length: count }, (_, i) => ({ ts: '2026-10-09T10:00:00Z', r: ['user', 'assistant', 'tool'][i % 3], x: `p${n} entry ${i}` }));
+    // the last two entries are what the live text already shows, so the page must hide them
+    const seen = [{ ts: '2026-10-09T10:01:00Z', r: 'assistant', x: 'Working on burnbar. Do you want to proceed?' }, { ts: '2026-10-09T10:01:01Z', r: 'assistant', x: 'Do you want to proceed? 1. Yes 2. Yes, and do not ask again' }];
+    let newest = [...mk(3, 38), ...seen];
+    const calls = [];
+    await page.route('**/api/history*', (route) => {
+      const b = new URL(route.request().url()).searchParams.get('before'); calls.push(b);
+      const n = b === null ? 3 : b === '300' ? 2 : 1;
+      route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ source: 'transcript',
+        entries: b === null ? newest : mk(n), before: n === 1 ? null : n === 3 ? 300 : 100, size: 999, note: null, at: Date.now() / 1000 }) });
+    });
+    await tap(page, '.tab[data-view=waiting]'); await page.waitForTimeout(400);
+    const bk = await page.evaluate(() => { const a = window.shepr.S.q.agents.find((x) => x.status === 'blocked'); return a.host + '|' + a.pane; });
+    await tap(page, `.item[data-key="${bk}"]`);
+    await page.waitForSelector('#detail:not([hidden])');
+    await page.waitForSelector('#hist .hent', { timeout: 8000 });
+    await page.waitForTimeout(300);
+    const t1 = await page.evaluate(() => { const t = document.getElementById('tail'); return { n: t.querySelectorAll('#hist .hent').length,
+      nearBottom: t.scrollHeight - t.scrollTop - t.clientHeight < 40, hist: document.getElementById('hist').textContent, live: document.querySelectorAll('#live .tl').length,
+      button: !!t.querySelector('.earlier, .hlive, .hbar') }; });
+    check('history: no button, it is just there above the live text', !t1.button && t1.n > 0);
+    check('history: the live text stays at the bottom, in view', t1.nearBottom && t1.live > 3);
+    check('history: entries the live text already shows are hidden (38 of 40 shown)', t1.n === 38 && !t1.hist.includes('Working on burnbar'));
+    check('history: the page itself does not scroll', await page.evaluate(() => document.documentElement.scrollHeight <= innerHeight + 1));
+    await page.screenshot({ path: `${OUT}/h1-history.png` });
+    await page.evaluate(() => { const t = document.getElementById('tail'); t.scrollTop = t.scrollHeight - t.clientHeight - 900; t.dispatchEvent(new Event('scroll')); });
+    await page.waitForTimeout(300);
+    check('history: scrolling up from the live text walks into the history, no jump', await page.evaluate(() => { const t = document.getElementById('tail'); return t.scrollTop > 0 && t.querySelectorAll('#hist .hent').length === 38; }));
+    await page.evaluate(() => { const t = document.getElementById('tail'); t.scrollTop = 0; t.dispatchEvent(new Event('scroll')); });
+    await page.waitForFunction(() => document.querySelectorAll('#hist .hent').length === 78, null, { timeout: 5000 });
+    const t2 = await page.evaluate(() => { const t = document.getElementById('tail'); const ents = [...t.querySelectorAll('#hist .hent')];
+      return { first: ents[0].textContent, joint: ents[40].textContent, top: t.scrollTop }; });
+    check('history: reaching the top loads the next older page ABOVE, in order', t2.first.includes('p2 entry 0') && t2.joint.includes('p3 entry 0'));
+    check('history: your place is kept when older text lands above it', t2.top > 200);
+    await page.evaluate(() => { const t = document.getElementById('tail'); t.scrollTop = 0; t.dispatchEvent(new Event('scroll')); });
+    await page.waitForFunction(() => document.getElementById('hmark').textContent.includes('start of this session'), null, { timeout: 5000 });
+    check('history: keeps going until the very start, then says so', JSON.stringify(calls.slice(0, 3)) === JSON.stringify([null, '300', '100']) && (await page.$$eval('#hist .hent', (n) => n.length)) === 118);
+    await page.screenshot({ path: `${OUT}/h2-history-start.png` });
+    // the session grows while it is open: the new entries appear at the bottom of the history, once each, in order
+    newest = [...mk(3, 38), ...[1, 2, 3].map((i) => ({ ts: `2026-10-09T10:0${i + 1}:00Z`, r: 'assistant', x: `fresh entry ${i}` }))];
+    await page.evaluate(() => window.shepr.syncHistory());
+    await page.waitForFunction(() => document.getElementById('hist').textContent.includes('fresh entry 3'), null, { timeout: 5000 });
+    const t3 = await page.evaluate(() => { const e = [...document.querySelectorAll('#hist .hent')].map((n) => n.textContent); return { n: e.length, tail: e.slice(-3) }; });
+    check('history: new entries are appended once, in order, with no gap', t3.n === 121 && t3.tail.every((x, i) => x.includes('fresh entry ' + (i + 1))));
+    check('history: the matching rule is sound (short text never matches, long text does)', await page.evaluate(() => {
+      window.shepr.S.tailText = 'Alpha beta gamma delta epsilon zeta eta theta';
+      const hit = window.shepr.liveCut([{ x: 'unrelated old message here' }, { x: 'alpha, beta! gamma delta epsilon zeta' }, { x: 'ok' }]);
+      const none = window.shepr.liveCut([{ x: 'yes' }, { x: 'no' }]);
+      return hit === 1 && none === 2; }));
+    await page.unroute('**/api/history*');
+    // no stub: the fixture agents have no transcript, so the host falls back to what herdr keeps
+    await page.click('#dback'); await page.waitForTimeout(500);
+    await tap(page, `.item[data-key="${bk}"]`);
+    await page.waitForSelector('#detail:not([hidden])');
+    await page.waitForFunction(() => document.getElementById('hmark') && document.getElementById('hmark').textContent.includes('herdr keeps'), null, { timeout: 8000 });
+    check('history: an agent with no transcript falls back to what herdr keeps, and says so', (await page.$$('#live .tl')).length > 3);
+    await page.click('#dback').catch(() => {}); await page.waitForTimeout(500);
+  }
+
   // ---- revocation signs the phone out
   cli('revoke', myId);
   await page.evaluate(() => window.shepr.S.q && fetch('api/queue').catch(() => 0));
