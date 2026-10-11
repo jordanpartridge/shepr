@@ -2446,7 +2446,7 @@ class Handler(SimpleHTTPRequestHandler):
 def cli_pair(a):
     info = server_info()
     if not info:
-        sys.exit("shepr: the server is not running here. Start it first: systemctl --user start nixweb-herder.remote.iphone")
+        sys.exit("shepr: the server is not running here. Start it first: systemctl --user start shepr")
     code = "".join(secrets.choice(CODE_ALPHABET) for _ in range(12))
     shown = "-".join(code[i:i + 4] for i in range(0, 12, 4))
     ttl = max(30, min(900, a.ttl))

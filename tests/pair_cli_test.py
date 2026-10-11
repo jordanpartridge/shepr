@@ -14,6 +14,12 @@ url = m.public_url(8742)
 good = url.startswith("https://") and "127.0.0.1" not in url and ".ts.net:8742" in url
 print(("PASS" if good else "FAIL"), "pairing URL uses the tailnet name:", url)
 
+# No server.json in this state dir, so `shepr pair` must name the unit from the README.
+st = tempfile.mkdtemp()
+r = subprocess.run([sys.executable, SERVER, "pair", "--no-wait"], env=dict(os.environ, SHEPR_STATE=st), capture_output=True, text=True)
+hint = r.returncode != 0 and "systemctl --user start shepr" in (r.stderr or "") and "nixweb-herder" not in (r.stderr or "")
+print(("PASS" if hint else "FAIL"), "pair: a stopped server is started with systemctl --user start shepr:", (r.stderr or "").strip())
+
 # CLI wait-mode needs a running test server on :8743 (see tests/ui.mjs header); skip cleanly without one.
 try:
     urllib.request.urlopen("http://localhost:8743/api/hello", timeout=2)
@@ -22,7 +28,7 @@ except Exception:
     have_server = False
 if not have_server:
     print("SKIP pair CLI wait-mode test: no test server on :8743")
-    sys.exit(0 if good else 1)
+    sys.exit(0 if good and hint else 1)
 
 d = tempfile.mkdtemp()
 subprocess.run(["openssl", "ecparam", "-name", "prime256v1", "-genkey", "-noout", "-out", d + "/k.pem"], check=True, capture_output=True)
@@ -38,4 +44,4 @@ res = json.load(urllib.request.urlopen(req))
 out, err = p.communicate(timeout=10)
 ok = p.returncode == 0 and "paired" in out and "cli-test" in out and res["fp"] in out
 print(("PASS" if ok else "FAIL"), "pair CLI waits, then reports the paired device:", out.strip().splitlines()[-1] if out.strip() else err)
-sys.exit(0 if good and (not have_server or ok) else 1)
+sys.exit(0 if good and hint and (not have_server or ok) else 1)
