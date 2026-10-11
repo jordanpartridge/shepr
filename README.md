@@ -25,8 +25,14 @@ workers on plain `http://`. `tailscale serve` supplies a real certificate on you
 ```bash
 # once, on the machine that runs herdr (needs python3, tailscale, herdr on PATH, and qrencode for the QR):
 git clone https://github.com/nixfred/shepr && cd shepr
-mkdir -p ~/.config/systemd/user ~/.local/bin && ln -sf "$PWD/server.py" ~/.local/bin/shepr
-export PATH="$HOME/.local/bin:$PATH"
+# ~/.local/bin or ~/bin, whichever this PATH already searches first. Otherwise ~/.local/bin.
+bindir=$(printf '%s\n' "$PATH" | tr ':' '\n' | while IFS= read -r d; do
+  [ "$d" = "$HOME/.local/bin" ] || [ "$d" = "$HOME/bin" ] || continue
+  printf '%s\n' "$d"; break
+done)
+[ -n "$bindir" ] || bindir="$HOME/.local/bin"
+mkdir -p ~/.config/systemd/user "$bindir" && ln -sf "$PWD/server.py" "$bindir/shepr"
+case ":$PATH:" in *":$bindir:"*) ;; *) export PATH="$bindir:$PATH" ;; esac
 cat > ~/.config/systemd/user/shepr.service <<EOF
 [Unit]
 Description=Shepr
@@ -46,7 +52,7 @@ systemctl --user daemon-reload && systemctl --user enable --now shepr
 shepr pair                                                           # shows a QR code
 ```
 
-The command is `~/.local/bin/shepr`. The export puts that directory on `PATH` for the rest of this paste, so `shepr pair` runs here.
+The link goes in `~/.local/bin` or `~/bin`, whichever comes first on `PATH`. If neither does, this paste uses `~/.local/bin` and adds it for this shell. The unit written here is named `shepr`. A nixweb install keeps the unit name it already chose.
 
 On the iPhone, in **Safari**: open `https://<this-host>.<your-tailnet>.ts.net:8742`, Share, **Add to Home Screen**. Open
 **Shepr** from the Home Screen, tap **Scan QR**, point it at the code in your terminal, tap **Pair**.
