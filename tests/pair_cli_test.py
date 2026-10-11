@@ -14,11 +14,39 @@ url = m.public_url(8742)
 good = url.startswith("https://") and "127.0.0.1" not in url and ".ts.net:8742" in url
 print(("PASS" if good else "FAIL"), "pairing URL uses the tailnet name:", url)
 
-# No server.json in this state dir, so `shepr pair` must name the unit from the README.
-st = tempfile.mkdtemp()
-r = subprocess.run([sys.executable, SERVER, "pair", "--no-wait"], env=dict(os.environ, SHEPR_STATE=st), capture_output=True, text=True)
-hint = r.returncode != 0 and "systemctl --user start shepr" in (r.stderr or "") and "nixweb-herder" not in (r.stderr or "")
-print(("PASS" if hint else "FAIL"), "pair: a stopped server is started with systemctl --user start shepr:", (r.stderr or "").strip())
+# The hint names the user unit that runs THIS server.py. It must not invent shepr, or one nixweb session name.
+def pair_err(home):
+    r = subprocess.run([sys.executable, SERVER, "pair", "--no-wait"],
+                       env=dict(os.environ, SHEPR_STATE=tempfile.mkdtemp(), HOME=home),
+                       capture_output=True, text=True)
+    return r.returncode != 0, (r.stderr or "").strip()
+
+def write_unit(home, unit, body):
+    d = os.path.join(home, ".config", "systemd", "user")
+    os.makedirs(d, exist_ok=True)
+    with open(os.path.join(d, unit), "w") as f:
+        f.write(body)
+
+me = os.path.realpath(SERVER)
+stopped, err = pair_err(tempfile.mkdtemp())
+bare = stopped and "shepr.service" in err and "nixweb-<session>" in err and "systemctl --user start" not in err
+print(("PASS" if bare else "FAIL"), "pair: with no unit installed, both install styles are named and neither is ordered:", err)
+
+home = tempfile.mkdtemp()
+write_unit(home, "shepr.service", f"ExecStart=/usr/bin/python3 {me} 8742\n")
+write_unit(home, "other.service", "ExecStart=/usr/bin/python3 /tmp/elsewhere/server.py 1\n")
+stopped, err = pair_err(home)
+readme = stopped and err.endswith("systemctl --user start shepr") and "elsewhere" not in err
+print(("PASS" if readme else "FAIL"), "pair: a README unit that runs this file is the one named:", err)
+
+home = tempfile.mkdtemp()
+link = os.path.join(home, "shepr-link")
+os.symlink(me, link)
+write_unit(home, "nixweb-herder.remote.iphone.service", f"ExecStart=/usr/bin/python3 {link} 8742\n")
+stopped, err = pair_err(home)
+nixweb = stopped and err.endswith("systemctl --user start nixweb-herder.remote.iphone") and "shepr.service" not in err
+print(("PASS" if nixweb else "FAIL"), "pair: a nixweb unit is named, including when its path is a symlink:", err)
+hint = bare and readme and nixweb
 
 # CLI wait-mode needs a running test server on :8743 (see tests/ui.mjs header); skip cleanly without one.
 try:
